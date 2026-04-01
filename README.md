@@ -110,7 +110,7 @@ Restart Claude Desktop. You now have three tools:
 
 ## Requirements
 
-- Go 1.22+
+- Go 1.22
 - MongoDB Atlas account (free tier works)
 
 ---
