@@ -6,49 +6,58 @@ import (
 	"github.com/jotx19/jotline/internal/config"
 	"github.com/jotx19/jotline/internal/extractor"
 	"github.com/jotx19/jotline/internal/store"
+	"github.com/jotx19/jotline/internal/ui"
 	"github.com/spf13/cobra"
 )
 
 var ingestCmd = &cobra.Command{
-	Use:   "ingest <file>",
-	Short: "Ingest a PDF, DOCX or text file",
-	Args:  cobra.ExactArgs(1),
-	Example: `  pipeline ingest ./lecture1.pdf
-  pipeline ingest ./vocab.txt
-  pipeline ingest ./notes.md`,
+	Use:     "ingest <file>",
+	Short:   "Ingest a PDF, DOCX or text file",
+	Args:    cobra.ExactArgs(1),
+	Example: `  jotline ingest ./lecture1.pdf`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		filePath := args[0]
 
+		ui.Header("v0.1.0")
+
 		cfg, err := config.Load()
 		if err != nil {
-			return fmt.Errorf("%s — run: pipeline init", err.Error())
+			ui.Error(err.Error() + " — run: jotline init")
+			return nil
 		}
 
-		fmt.Printf("Extracting %s...\n", filePath)
-		result, err := extractor.Extract(filePath)
+		result, err := ui.RunWithSpinner(
+			"Extracting "+filePath,
+			func() (string, error) {
+				r, err := extractor.Extract(filePath)
+				if err != nil {
+					return "", err
+				}
+				s, err := store.New(cfg.MongoURI, cfg.Database)
+				if err != nil {
+					return "", err
+				}
+				doc := &store.Document{
+					Title:    r.Title,
+					FileName: r.FileName,
+					FileType: r.FileType,
+					RawText:  r.RawText,
+					Size:     r.Size,
+				}
+				if err := s.Save(doc); err != nil {
+					return "", err
+				}
+				return fmt.Sprintf("%s · %d chars · ID: %s",
+					r.Title, len(r.RawText), doc.ID.Hex()), nil
+			},
+		)
+
 		if err != nil {
-			return err
+			ui.Error(err.Error())
+			return nil
 		}
 
-		s, err := store.New(cfg.MongoURI, cfg.Database)
-		if err != nil {
-			return fmt.Errorf("failed to connect to MongoDB: %w", err)
-		}
-
-		doc := &store.Document{
-			Title:    result.Title,
-			FileName: result.FileName,
-			FileType: result.FileType,
-			RawText:  result.RawText,
-			Size:     result.Size,
-		}
-
-		if err := s.Save(doc); err != nil {
-			return fmt.Errorf("failed to save: %w", err)
-		}
-
-		fmt.Printf("✅ Ingested: %s\n", result.Title)
-		fmt.Printf("   %d chars | ID: %s\n", len(result.RawText), doc.ID.Hex())
+		ui.Success("Ingested: " + result)
 		return nil
 	},
 }
