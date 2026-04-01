@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
@@ -37,22 +38,24 @@ var (
 )
 
 func Header(version string) {
-	fmt.Println()
-	fmt.Println(titleStyle.Render("◆ jotline") + dimStyle.Render("  "+version))
-	fmt.Println()
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, titleStyle.Render("◆ jotline")+dimStyle.Render("  "+version))
+	fmt.Fprintln(os.Stderr)
 }
 
 func Success(msg string) {
-	fmt.Println(successStyle.Render("✓ ") + msg)
+	fmt.Fprintln(os.Stderr, successStyle.Render("✓ ")+msg)
 }
 
 func Info(msg string) {
-	fmt.Println(dimStyle.Render("  " + msg))
+	fmt.Fprintln(os.Stderr, dimStyle.Render("  "+msg))
 }
 
 func Error(msg string) {
-	errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444")).Bold(true)
-	fmt.Println(errStyle.Render("✗ ") + msg)
+	errStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#EF4444")).
+		Bold(true)
+	fmt.Fprintln(os.Stderr, errStyle.Render("✗ ")+msg)
 }
 
 type SpinnerModel struct {
@@ -73,6 +76,7 @@ func NewSpinner(message string, task func() (string, error)) SpinnerModel {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(accent)
+
 	return SpinnerModel{
 		spinner: s,
 		message: message,
@@ -92,16 +96,19 @@ func (m SpinnerModel) Init() tea.Cmd {
 
 func (m SpinnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+
 	case doneMsg:
 		m.done = true
 		m.result = msg.result
 		m.err = msg.err
 		return m, tea.Quit
+
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
 	}
+
 	return m, nil
 }
 
@@ -115,11 +122,14 @@ func (m SpinnerModel) View() string {
 
 func RunWithSpinner(message string, task func() (string, error)) (string, error) {
 	m := NewSpinner(message, task)
-	p := tea.NewProgram(m)
+
+	p := tea.NewProgram(m, tea.WithOutput(os.Stderr)) // 🔥 CRITICAL
+
 	final, err := p.Run()
 	if err != nil {
 		return "", err
 	}
+
 	result := final.(SpinnerModel)
 	return result.result, result.err
 }
