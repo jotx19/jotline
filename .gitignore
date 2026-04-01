@@ -1,4 +1,17 @@
+# Environment files
 *.env
+
+# macOS
 .DS_Store
+
+# Build binaries (CLI outputs)
 jotline
 pipeline
+
+# Go build output
+/bin/
+/build/
+/out/
+
+# Go modules
+go.sum
