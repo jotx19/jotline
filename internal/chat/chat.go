@@ -143,13 +143,13 @@ func jotlineTools() []Tool {
 			Type: "function",
 			Function: ToolFunction{
 				Name:        "get_document",
-				Description: "Get full content of a document by its ID",
+				Description: "Get full content of a document by its ID. Only call this with a real ID obtained from list_documents or search_documents.",
 				Parameters: map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
 						"id": map[string]interface{}{
 							"type":        "string",
-							"description": "Document ID",
+							"description": "Document ID obtained from list_documents or search_documents",
 						},
 					},
 					"required": []string{"id"},
@@ -351,6 +351,7 @@ type responseMsg struct {
 	err  error
 }
 
+// FIX 1: Improved system prompt to guide tool usage order
 func newChatModel(s *store.Store, mdl string) chatModel {
 	ti := textinput.New()
 	ti.Placeholder = "Ask anything about your documents..."
@@ -372,8 +373,15 @@ func newChatModel(s *store.Store, mdl string) chatModel {
 		spinner: sp,
 		history: []Message{
 			{
-				Role:    "system",
-				Content: "You are a helpful assistant with access to the user's personal document library via jotline tools. Use the tools whenever the user asks about their documents, notes, or stored content. Be concise and clear.",
+				Role: "system",
+				Content: `You are a helpful assistant with access to the user's personal document library via jotline tools.
+
+Tool usage rules:
+- NEVER call get_document unless you have a real document ID from list_documents or search_documents.
+- When asked about a person, topic, or keyword: ALWAYS call search_documents first.
+- Only call get_document with an ID you received from a previous tool result.
+- If search returns no results, say so clearly — do not guess or fabricate.
+- Be concise and clear in your responses.`,
 			},
 		},
 	}
@@ -436,6 +444,7 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.entries = append(m.entries, chatEntry{role: "assistant", content: resp.Message.Content})
 			return m, nil
 		}
+
 		tc := resp.Message.ToolCalls[0]
 		m.history = append(m.history, Message{Role: "assistant", ToolCalls: resp.Message.ToolCalls})
 		m.toolLabel = tc.Function.Name
@@ -449,6 +458,21 @@ func (m chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.spinner.Tick,
 			func() tea.Msg {
 				result := executeTool(s, name, args)
+
+				// FIX 2: Don't ask the model to summarise tool errors — surface them directly
+				if strings.HasPrefix(result, "Error:") {
+					return responseMsg{resp: &ChatResponse{
+						Message: struct {
+							Role      string     `json:"role"`
+							Content   string     `json:"content"`
+							ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+						}{
+							Role:    "assistant",
+							Content: "I wasn't able to complete that: " + result,
+						},
+					}}
+				}
+
 				newHist := append(hist, Message{Role: "tool", Name: name, Content: result})
 				newHist = append(newHist, Message{Role: "user", Content: "Summarise the tool result above in plain, friendly language."})
 				resp2, err := callOllama(mdl, newHist, nil)
