@@ -28,7 +28,7 @@ Arguments marked `*` are required. Numbers and booleans may be sent as JSON valu
 
 | Tool | Arguments | Result |
 |---|---|---|
-| `run_shell` | `command*` | `EXIT_CODE`, `STDOUT`, `STDERR` (each cut at 12,000 characters). Runs `bash -lc` in the workspace root. Killed with its whole process group after `--shell-timeout` seconds. Counts as verification for the verification gate. Asks first with `--ask-permissions`. |
+| `run_shell` | `command*` | `EXIT_CODE`, `STDOUT`, `STDERR` (each cut at 12,000 characters). Runs `bash -lc` in the workspace root with `PYTHONDONTWRITEBYTECODE=1`, so a quick edit-and-rerun never executes stale Python bytecode. Killed with its whole process group after `--shell-timeout` seconds. Counts as verification for the verification gate. Asks first with `--ask-permissions`. |
 
 ## Git
 

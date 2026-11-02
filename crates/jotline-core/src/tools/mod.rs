@@ -47,6 +47,21 @@ pub enum ToolStatus {
     Denied,
 }
 
+/// One file modified by a tool call, for front ends that show diffs.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct FileChange {
+    /// Workspace-relative path with `/` separators.
+    pub path: String,
+    /// True when the file did not exist before the call.
+    pub created: bool,
+    /// Previous contents; `None` when the file was created, or when `too_large` is set.
+    pub before: Option<String>,
+    /// New contents; `None` when `too_large` is set.
+    pub after: Option<String>,
+    /// True when either version exceeded 256 KiB, so contents were not recorded.
+    pub too_large: bool,
+}
+
 /// The result of one tool call (or one `parallel_tools` batch).
 #[derive(Clone, Debug)]
 pub struct ToolOutput {
@@ -57,6 +72,8 @@ pub struct ToolOutput {
     pub wrote_files: bool,
     /// True when at least one successful call executed a command (a verification attempt).
     pub executed: bool,
+    /// Files this call changed, in the order they were written. Empty for read-only calls.
+    pub changes: Vec<FileChange>,
 }
 
 impl ToolOutput {
@@ -209,12 +226,16 @@ impl ToolExecutor {
                 text: json!({ "loaded_plugins": self.plugin_names() }).to_string(),
                 wrote_files: false,
                 executed: false,
+                changes: Vec::new(),
             };
         }
-        if tool_name == "parallel_tools" {
-            return self.parallel_tools(args);
-        }
-        self.execute_single(tool_name, args)
+        let mut output = if tool_name == "parallel_tools" {
+            self.parallel_tools(args)
+        } else {
+            self.execute_single(tool_name, args)
+        };
+        output.changes = self.workspace.take_changes();
+        output
     }
 
     fn execute_single(&self, tool_name: &str, args: &Value) -> ToolOutput {
@@ -232,6 +253,7 @@ impl ToolExecutor {
                 text,
                 wrote_files: effect == Effect::Write,
                 executed: effect == Effect::Execute,
+                changes: Vec::new(),
             },
             Err(failure) => ToolOutput {
                 status: match failure {
@@ -241,6 +263,7 @@ impl ToolExecutor {
                 text: failure.to_string(),
                 wrote_files: false,
                 executed: false,
+                changes: Vec::new(),
             },
         }
     }
@@ -402,6 +425,7 @@ impl ToolExecutor {
             text: format!("ERROR: {message}"),
             wrote_files: false,
             executed: false,
+            changes: Vec::new(),
         };
 
         let Some(calls) = args.get("calls").and_then(Value::as_array) else {
@@ -455,6 +479,7 @@ impl ToolExecutor {
                         text: "ERROR: parallel call panicked".to_string(),
                         wrote_files: false,
                         executed: false,
+                        changes: Vec::new(),
                     }));
                 }
             }
@@ -485,6 +510,7 @@ impl ToolExecutor {
             text: json!({ "parallel_results": results }).to_string(),
             wrote_files: outputs.iter().any(|o| o.is_ok() && o.wrote_files),
             executed: outputs.iter().any(|o| o.is_ok() && o.executed),
+            changes: Vec::new(),
         }
     }
 }

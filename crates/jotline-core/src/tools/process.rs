@@ -130,6 +130,10 @@ pub(crate) fn run_shell(root: &Path, command: &str, timeout_seconds: u64) -> Too
     }
     let mut cmd = Command::new("bash");
     cmd.arg("-lc").arg(command).current_dir(root);
+    // An edit that keeps a file's size within the same second as the previous import leaves
+    // Python's bytecode cache looking valid, so a re-run would execute the old code. Agents edit
+    // and re-test quickly, so never write bytecode from agent commands.
+    cmd.env("PYTHONDONTWRITEBYTECODE", "1");
     match run_process(&mut cmd, None, timeout_seconds) {
         Ok(result) => Ok(format_output(&result)),
         Err(err) => fail(format!("failed to start bash: {err}")),

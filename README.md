@@ -15,38 +15,55 @@ Plan, edit, and verify code from your terminal with Ollama or any OpenAI-compati
 [![Works with Ollama](https://img.shields.io/badge/works%20with-Ollama-black)](https://ollama.com)
 [![Chat on JotPod](https://img.shields.io/badge/chat-JotPod-5865F2)](https://jotpod.jotx.space)
 
-[Install](#install) · [Quickstart](#quickstart) · [Usage](#usage) · [Rules](#project-rules) · [Docs](#documentation) · [Contributing](#contributing)
+[Install](#install) · [Quickstart](#quickstart) · [Interactive UI](#interactive-ui) · [Usage](#usage) · [Rules](#project-rules) · [Docs](#documentation) · [Contributing](#contributing)
 
 </div>
+
+> [!NOTE]
+> **jotline is source-only for now.** Build it locally with the [steps below](#install); it takes about two minutes. One-command installs through **npm** and **Homebrew** are coming soon.
 
 ---
 
 jotline is a coding agent built for **small local models**: 7-8B parameters, short context windows, and imperfect JSON. Instead of trusting the model to behave, the orchestrator does the disciplined parts in Rust: it classifies every request, hands the model a short playbook for that kind of task, insists on a plan first, corrects malformed replies with precise messages, keeps every file operation inside your workspace, and refuses to accept "done" after a code change until a build or test command has actually run.
 
 ```text
-╭ jotline 2.0.0 ────────────────────────────────────────────────────────────╮
-│ scope     /home/me/projects/api                                           │
-│ models    qwen3:8b via ollama (planner qwen3:8b, coder qwen3:8b)          │
-│ rules     4 built-in, 2 project   (/rules to inspect, /rules add <rule>)  │
-╰───────────────────────────────────────────────────────────────────────────╯
-✦ main  api  qwen3:8b  auto › fix the off-by-one in pagination and add a test
-✦ intent bugfix
-╭ Plan ─────────────────────────────────────────────────────────────────────╮
-│ main · detailed plan · bugfix                                             │
-│ Fix page offset calculation and cover it with a regression test           │
-│ 1. search_files for the offset computation                                │
-│ 2. reproduce with a failing test in tests/test_pagination.py              │
-│ 3. fix the root cause, run pytest                                         │
-╰───────────────────────────────────────────────────────────────────────────╯
-● tool main search_files {"pattern":"offset ="}
-● tool main edit_file {"path":"api/pagination.py", ...}
-● tool main run_shell {"command":"pytest -q tests/test_pagination.py"}
-╭ Done · main · bugfix · 7 steps ───────────────────────────────────────────╮
-│ Fixed the off-by-one: offset now uses (page - 1) * size.                  │
-│ verified                                                                  │
-│   • pytest -q tests/test_pagination.py -> 4 passed                        │
-╰───────────────────────────────────────────────────────────────────────────╯
+╭───────────────────────────────────────────────────────────────╮
+│ ✻ jotline 2.0.0                                               │
+│   ~/jotline-playground                                        │
+│   qwen2.5-coder:7b · ollama · auto-approve                    │
+│   rules: 4 built-in, 1 project · 23 tools                     │
+╰───────────────────────────────────────────────────────────────╯
+
+> the test in test_calc.py fails, fix the bug in calc.py
+
+  ✻ intent bugfix
+
+● Plan · Find why test_add fails and fix add() in calc.py
+  ⎿  3 steps · 1. Run the test to see the error
+
+● Bash(python3 -c "import test_calc; test_calc.test_add()") 82ms
+  ⎿  exit 1 · 5 lines of output
+
+● Update(calc.py) 2ms
+  ⎿  Updated calc.py with 1 addition and 1 removal
+     1   def add(a, b):
+     2 -     return a - b
+     2 +     return a + b
+
+● Bash(python3 -c "import test_calc; test_calc.test_add()") 59ms
+  ⎿  exit 0 · 1 line of output
+
+● Fixed add() in calc.py: it subtracted instead of adding.
+    verified
+    ✓ test_calc.test_add -> ok
+  1 file changed (+1 −1) · 5 steps · bugfix
+╭───────────────────────────────────────────────────────────────╮
+│ > Describe a task, or type / for commands                     │
+╰───────────────────────────────────────────────────────────────╯
+  /help · ↑↓ select · ctrl+o expand all      auto · qwen2.5-coder:7b
 ```
+
+Every tool call is a live row you can select and expand, every file change is shown as a diff, and the agent must run a check before it claims a fix. See [Interactive UI](#interactive-ui).
 
 ## Table of contents
 
@@ -54,6 +71,7 @@ jotline is a coding agent built for **small local models**: 7-8B parameters, sho
 - [Install](#install)
 - [Quickstart](#quickstart)
 - [Usage](#usage)
+- [Interactive UI](#interactive-ui)
 - [Configuration](#configuration)
 - [Project rules](#project-rules)
 - [Tools](#tools)
@@ -82,55 +100,114 @@ jotline is a coding agent built for **small local models**: 7-8B parameters, sho
 
 ## Install
 
-### Prebuilt binaries
+jotline is distributed as source code for now. The steps below clone the repository, build the agent and the terminal UI, and run them on a small demo project so you can watch the agent fix a real bug.
 
-Each GitHub release from the release workflow includes archives for Linux (x86_64, aarch64) and macOS (Apple Silicon, Intel), with SHA-256 checksums. Download one from the [releases page](https://github.com/jotx19/jotline/releases/latest), or from a terminal:
+> One-command installs are on the way: **npm** (the terminal UI) and **Homebrew** (the agent and the UI together). Until they ship, build from source.
 
-```bash
-VERSION=v2.0.0                      # pick a tag from the releases page
-TARGET=aarch64-apple-darwin         # x86_64-apple-darwin | x86_64-unknown-linux-gnu | aarch64-unknown-linux-gnu
-curl -LO "https://github.com/jotx19/jotline/releases/download/${VERSION}/jotline-${VERSION}-${TARGET}.tar.gz"
-curl -LO "https://github.com/jotx19/jotline/releases/download/${VERSION}/jotline-${VERSION}-${TARGET}.tar.gz.sha256"
-shasum -a 256 -c "jotline-${VERSION}-${TARGET}.tar.gz.sha256"
-tar -xzf "jotline-${VERSION}-${TARGET}.tar.gz"
-sudo mv "jotline-${VERSION}-${TARGET}/jotline" /usr/local/bin/
-jotline --version
-```
+### 1. Prerequisites
 
-### From source
+| Tool | Version | Install | Check |
+|---|---|---|---|
+| Rust | 1.85 or newer | [rustup.rs](https://rustup.rs) | `cargo --version` |
+| Node.js | 18.18 or newer | [nodejs.org](https://nodejs.org) or `brew install node` | `node --version` |
+| Ollama | any recent | [ollama.com](https://ollama.com) or `brew install ollama` | `ollama --version` |
+| git, bash, python3 | any | preinstalled on macOS and most Linux | `git --version` |
 
-Requires Rust **1.85 or newer** ([rustup](https://rustup.rs)).
+jotline runs on macOS and Linux. On Windows, use WSL.
+
+### 2. Clone and build
 
 ```bash
-# latest main
-cargo install --git https://github.com/jotx19/jotline jotline --locked
-
-# or from a checkout
 git clone https://github.com/jotx19/jotline.git
 cd jotline
-cargo install --path crates/jotline --locked
+
+# the agent (Rust)
+cargo build --release -p jotline
+
+# the interactive terminal UI (TypeScript)
+cd packages/tui
+npm ci
+npm run build
+cd ../..
 ```
 
-### Requirements
+The agent binary is now at `target/release/jotline` and the UI at `packages/tui/dist/src/cli.js`.
 
-| Requirement | Why |
+### 3. Get a model
+
+```bash
+ollama pull qwen2.5-coder:7b     # about 4.7 GB; see "Choosing a model" for others
+```
+
+### 4. Try it on a demo project
+
+This creates a tiny Python project with a bug, then starts jotline in it:
+
+```bash
+JOTLINE_REPO="$PWD"
+mkdir -p ~/jotline-playground && cd ~/jotline-playground
+git init -q
+printf 'def add(a, b):\n    return a - b\n' > calc.py
+printf 'from calc import add\n\ndef test_add():\n    assert add(2, 3) == 5\n' > test_calc.py
+printf -- '- Verify with `python3 -c "import test_calc; test_calc.test_add(); print(\x27ok\x27)"`.\n' > JOTLINE.md
+
+JOTLINE_BIN="$JOTLINE_REPO/target/release/jotline" \
+  node "$JOTLINE_REPO/packages/tui/dist/src/cli.js" --model qwen2.5-coder:7b
+```
+
+Type this and press enter:
+
+```text
+the test in test_calc.py fails, fix the bug in calc.py
+```
+
+Watch the plan, the tool calls, and the diff. Press ↑ to select a row and enter to expand it; press ctrl+c to quit. Then check the result:
+
+```bash
+cat calc.py                                                   # should say: return a + b
+python3 -c "import test_calc; test_calc.test_add(); print('ok')"
+```
+
+To run it again, rerun the three `printf` lines to put the bug back.
+
+### 5. Install the commands (optional)
+
+To run `jotline` and `jotline-tui` from any folder:
+
+```bash
+cd ~/path/to/jotline                         # your clone
+cargo install --path crates/jotline --locked  # installs `jotline` into ~/.cargo/bin
+cd packages/tui && npm link                   # installs `jotline-tui`
+```
+
+```bash
+cd ~/any/project
+jotline-tui --model qwen2.5-coder:7b          # interactive UI
+jotline --model qwen2.5-coder:7b              # classic terminal
+jotline -p "explain this project"             # one-shot, for scripts
+```
+
+After pulling new changes, rebuild with `cargo install --path crates/jotline --locked --force` and `npm run build` in `packages/tui`.
+
+### Troubleshooting
+
+| You see | Fix |
 |---|---|
-| Linux or macOS | `run_shell` uses `bash`. On Windows, use WSL. |
-| `git` | git tools and `apply_patch`. Everything else works without it. |
-| A model server | [Ollama](https://ollama.com) (default) or any OpenAI-compatible `/v1/chat/completions` server: vLLM, llama.cpp `llama-server`, LM Studio, LocalAI. |
+| `could not find the jotline binary` | Build step 2 did not finish, or `JOTLINE_BIN` points to the wrong path. |
+| `model '…' is not installed in Ollama` | Run `ollama list` and pass an installed tag with `--model`. |
+| `failed request to http://127.0.0.1:11434` | Start Ollama: open the app or run `ollama serve`. |
+| `command not found: jotline` | Run step 5, and make sure `~/.cargo/bin` is on your `PATH`. |
+| The agent retries a lot or gets stuck | Small models struggle with longer tasks. Try `ollama pull qwen3:8b` and `--model qwen3:8b`, or a smaller request. |
 
 ## Quickstart
 
+After [installing](#install):
+
 ```bash
-# 1. Get a model (any chat model works; coder models do best)
-ollama pull qwen3:8b
-
-# 2. Start jotline in your project
+ollama pull qwen2.5-coder:7b
 cd path/to/your/project
-jotline
-
-# 3. Or run one task and exit
-jotline -p "explain how configuration is loaded"
+jotline-tui --model qwen2.5-coder:7b              # interactive UI
+jotline -p "explain how configuration is loaded"  # one-shot in the classic terminal
 ```
 
 If the model is not installed, jotline prints the exact `ollama pull` command to run.
@@ -210,6 +287,35 @@ jotline --max-history 30                        # tighter context for small-cont
 ```
 
 With `-p`, the exit status is `0` when the task finished with a handoff and `1` otherwise, so jotline can run in scripts.
+
+## Interactive UI
+
+`jotline-tui` is a full-screen-style terminal UI written in TypeScript with Ink. Instead of a scrolling log, every tool call is a live row (`Update(calc.py)`, `Bash(pytest -q)`) with its result, every file change shows a colored diff, and you can expand any item.
+
+```text
+● Update(calc.py) 0.3s
+  ⎿  Updated calc.py with 1 addition and 1 removal
+     1   def add(a, b):
+     2 -     return a - b
+     2 +     return a + b
+
+● Bash(pytest -q) 1.2s
+  ⎿  exit 0 · 3 lines of output
+```
+
+Build it with the [install steps](#install), then run `jotline-tui` in any project. Every argument is passed to the agent, so `--model`, `-w`, `--ask-permissions`, and the other [flags](#configuration) work the same way.
+
+| Key | Action |
+|---|---|
+| ↑ / ↓ | select a tool call or plan |
+| enter / space | expand or collapse it |
+| ctrl+o | expand or collapse everything in the current turn |
+| esc | interrupt the agent |
+| `y` / `n` | answer an approval prompt (with `--ask-permissions`) |
+| `/` | list commands; tab completes |
+| ctrl+c | quit |
+
+More detail, including every slash command, is in [packages/tui/README.md](packages/tui/README.md). The UI talks to `jotline --stdio`, a JSON-lines protocol any editor or GUI can use; see [docs/PROTOCOL.md](docs/PROTOCOL.md).
 
 ## Configuration
 
@@ -298,6 +404,8 @@ jotline/
 │   ├── jotline/            # CLI binary: flags, REPL, slash commands, terminal UI, approvals
 │   └── jotline-core/       # engine library: orchestrator, intent, rules, tools, model clients
 │       └── rules/          # built-in rules compiled into the binary
+├── packages/
+│   └── tui/                # TypeScript terminal UI (Ink) on top of `jotline --stdio`
 ├── docs/                   # user and contributor guides
 ├── examples/               # sample JOTLINE.md, rule files, and a plugin
 ├── tools/                  # maintainer scripts used by CI
@@ -324,6 +432,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings # lints
 cargo fmt --all                                                # format
 cargo doc --workspace --no-deps --open                         # API docs
 python3 tools/check_docs.py                                    # broken relative links in Markdown
+(cd packages/tui && npm ci && npm test)                        # terminal UI typecheck + tests
 ```
 
 Tests never call a real model: the orchestrator is driven by a scripted stub, and the binary is tested end-to-end against a fake Ollama server. The [developer guide](docs/DEVELOPMENT.md) maps the codebase and walks through adding a tool.
@@ -364,6 +473,8 @@ jotline can run shell commands chosen by a model. It keeps file tools inside the
 | [Configuration](docs/CONFIGURATION.md) | Every flag, environment variable, and the `.jotline/` directory. |
 | [Rules](docs/RULES.md) | Rule sources, adding rules, writing good rules, limits. |
 | [Tools](docs/TOOLS.md) | Every tool's arguments and results, and plugins. |
+| [Protocol](docs/PROTOCOL.md) | The `--stdio` JSON-lines protocol for front ends. |
+| [Terminal UI](packages/tui/README.md) | Install, keys, and commands for `jotline-tui`. |
 | [Development](docs/DEVELOPMENT.md) | Setup, commands, codebase map, adding a tool, testing without a model. |
 | [Quality](docs/QUALITY.md) | How changes are specified, tested, reviewed, and documented. |
 | [Releasing](docs/RELEASING.md) | Versioning, release steps, and one-time repository setup. |

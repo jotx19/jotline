@@ -16,3 +16,6 @@ id_rsa
 id_ed25519
 *.crate
 *.tar.gz
+
+# Personal command notes.
+cli.todo

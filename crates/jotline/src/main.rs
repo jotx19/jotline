@@ -2,6 +2,7 @@
 
 mod cli;
 mod repl;
+mod stdio;
 mod ui;
 
 use anyhow::{Context, Result};
@@ -79,6 +80,19 @@ fn run() -> Result<ExitCode> {
         plugins_dir: cli.plugins_dir.clone(),
     };
 
+    // In --stdio mode the reader thread must exist before the tools, because approvals and
+    // interrupts arrive on stdin while a task runs.
+    let emitter = Arc::new(stdio::Emitter::new());
+    let mut stdio_inputs = cli.stdio.then(|| stdio::spawn_reader(Arc::clone(&emitter)));
+    let approver: Option<Arc<dyn jotline_core::tools::Approver>> = match stdio_inputs.as_mut() {
+        _ if runtime.auto_mode => None,
+        Some(inputs) => Some(Arc::new(stdio::StdioApprover::new(
+            Arc::clone(&emitter),
+            inputs,
+        ))),
+        None => Some(Arc::new(ui::TerminalApprover)),
+    };
+
     let paths = runtime.state_paths(&workspace);
     let tools = ToolExecutor::new(ToolConfig {
         workspace_root: workspace.clone(),
@@ -86,11 +100,7 @@ fn run() -> Result<ExitCode> {
         memory_file: paths.memory_file,
         plugins_dir: paths.plugins_dir,
         rules_dir: paths.rules_dir,
-        approver: if runtime.auto_mode {
-            None
-        } else {
-            Some(Arc::new(ui::TerminalApprover))
-        },
+        approver,
     });
 
     let routing = ModelRouting {
@@ -107,12 +117,35 @@ fn run() -> Result<ExitCode> {
     };
 
     let llm = build_llm(&cli)?;
+    let reporter: Arc<dyn jotline_core::reporter::Reporter> = if cli.stdio {
+        Arc::new(stdio::StdioReporter::new(Arc::clone(&emitter)))
+    } else {
+        Arc::new(ui::TerminalReporter::new(!cli.quiet()))
+    };
     let mut orchestrator = Orchestrator::new(llm, tools, config)
-        .with_reporter(Arc::new(ui::TerminalReporter::new(!cli.quiet())))
+        .with_reporter(reporter)
         .with_rule_options(RuleOptions {
             builtin: !cli.no_builtin_rules,
             project: !cli.no_project_rules,
         });
+
+    if let Some(inputs) = stdio_inputs {
+        orchestrator = orchestrator.with_cancel_flag(Arc::clone(&inputs.cancel));
+        if let Some(path) = runtime.session_file.as_deref() {
+            if path.exists() && !cli.fresh_session {
+                if let Err(err) = orchestrator.load_session(path) {
+                    emitter.emit(serde_json::json!({"event": "error", "message": format!("could not load session: {err:#}")}));
+                }
+            }
+        }
+        let info = stdio::SessionInfo {
+            provider: runtime.provider.as_str(),
+            auto_mode: runtime.auto_mode,
+            session_file: runtime.session_file.as_deref(),
+        };
+        stdio::serve(&mut orchestrator, inputs, &emitter, &info)?;
+        return Ok(ExitCode::SUCCESS);
+    }
 
     if let Some(path) = runtime.session_file.as_deref() {
         if path.exists() && cli.fresh_session {

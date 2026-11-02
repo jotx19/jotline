@@ -408,3 +408,23 @@ fn identical_failing_call_is_flagged_on_repeat() {
     assert!(!first.contains("already made this exact call"));
     assert!(second.contains("already made this exact call"));
 }
+
+#[test]
+fn cancel_flag_stops_the_task_before_the_next_model_call() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    let tmp = TempDir::new().unwrap();
+    let flag = Arc::new(AtomicBool::new(false));
+    let llm = StubLlm::new([PLAN, r#"{"type":"final","message":"never"}"#]);
+    let mut orchestrator =
+        build_orchestrator(&tmp, llm.clone()).with_cancel_flag(Arc::clone(&flag));
+    flag.store(true, Ordering::SeqCst);
+    assert_eq!(
+        orchestrator.run_active("anything"),
+        jotline_core::orchestrator::INTERRUPTED
+    );
+    assert!(llm.calls().is_empty());
+    // The flag is consumed, so the next task runs normally.
+    assert!(!flag.load(Ordering::SeqCst));
+    assert_eq!(orchestrator.run_active("again"), "never");
+}

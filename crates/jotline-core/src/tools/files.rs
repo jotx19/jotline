@@ -255,14 +255,23 @@ fn read_text(path: &Path, display: &str) -> Result<String, super::Failure> {
     }
 }
 
-fn write_text(path: &Path, display: &str, text: &str) -> Result<(), super::Failure> {
+/// Writes `text` to `path` and records the change in the workspace change log.
+fn write_text(
+    ws: &Workspace,
+    path: &Path,
+    display: &str,
+    text: &str,
+) -> Result<(), super::Failure> {
     if let Some(parent) = path.parent() {
         if let Err(err) = fs::create_dir_all(parent) {
             return fail(format!("failed creating parent of '{display}': {err}"));
         }
     }
+    let before = ws.snapshot(path);
     fs::write(path, text.as_bytes())
-        .or_else(|err| fail(format!("failed writing '{display}': {err}")))
+        .or_else(|err| fail(format!("failed writing '{display}': {err}")))?;
+    ws.record_change(path, before);
+    Ok(())
 }
 
 pub(crate) fn read_file(
@@ -306,7 +315,7 @@ pub(crate) fn write_file(ws: &Workspace, path: &str, content: &str) -> ToolResul
         return fail(format!("'{path}' is a directory"));
     }
     let existed = resolved.exists();
-    write_text(&resolved, path, content)?;
+    write_text(ws, &resolved, path, content)?;
     Ok(format!(
         "WROTE: {path} ({} bytes, {})",
         content.len(),
@@ -364,7 +373,7 @@ pub(crate) fn edit_file(
         _ => {}
     }
     let updated = text.replace(old.as_str(), &new);
-    write_text(&resolved, path, &updated)?;
+    write_text(ws, &resolved, path, &updated)?;
     Ok(format!("EDITED: {path} (replacements={occurrences}){note}"))
 }
 
@@ -440,7 +449,7 @@ fn replace_text(
         Some(limit) => (text.replacen(old, new, limit), occurrences.min(limit)),
         None => (text.replace(old, new), occurrences),
     };
-    write_text(&resolved, path, &updated)?;
+    write_text(ws, &resolved, path, &updated)?;
     Ok(format!(
         "REPLACED: {path} occurrences={occurrences} applied={applied}"
     ))
@@ -475,7 +484,7 @@ pub(crate) fn replace_lines(
     if had_trailing_newline || text.is_empty() {
         updated.push('\n');
     }
-    write_text(&resolved, path, &updated)?;
+    write_text(ws, &resolved, path, &updated)?;
     Ok(format!("WROTE: {path} lines {start_line}-{end_line}"))
 }
 
@@ -486,6 +495,7 @@ fn append_text(ws: &Workspace, path: &str, text: &str) -> ToolResult {
             return fail(format!("failed creating parent of '{path}': {err}"));
         }
     }
+    let before = ws.snapshot(&resolved);
     let mut handle = fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -494,6 +504,8 @@ fn append_text(ws: &Workspace, path: &str, text: &str) -> ToolResult {
     handle
         .write_all(text.as_bytes())
         .or_else(|err| fail(format!("failed appending to '{path}': {err}")))?;
+    drop(handle);
+    ws.record_change(&resolved, before);
     Ok(format!("APPENDED: {path} ({} bytes)", text.len()))
 }
 
