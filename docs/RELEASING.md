@@ -10,7 +10,7 @@ Pull requests are squash-merged, and their [Conventional Commit](https://www.con
 
 1. A maintainer runs the Release workflow manually on `main` (**Actions → Release → Run workflow**, or `gh workflow run release.yml --ref main`). It opens or updates a release pull request that bumps the version in `Cargo.toml`, `crates/jotline/Cargo.toml`, `Cargo.lock`, and `version.txt`, and adds a `CHANGELOG.md` section.
 2. Review the release pull request: check the version, edit the changelog wording if needed, and wait for CI.
-3. Merge the release pull request. The workflow creates the `vX.Y.Z` tag and GitHub release, then builds `jotline` for Linux (x86_64, aarch64) and macOS (x86_64, aarch64) and uploads the archives with SHA-256 checksums to the release.
+3. Merge the release pull request. The workflow creates the `vX.Y.Z` tag and GitHub release, then builds `jotline` for Linux (x86_64, aarch64) and macOS (x86_64, aarch64) and uploads the archives with SHA-256 checksums to the release, together with `jotline-tui-vX.Y.Z.tgz` (the interactive UI, packed with `npm pack`). The one-line [installer](../install.sh) downloads exactly these files, so a release must finish all of these jobs before the installer can use it.
 
 Normal pull requests and merges never publish anything.
 

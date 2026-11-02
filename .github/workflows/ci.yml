@@ -33,6 +33,8 @@ jobs:
           RUSTDOCFLAGS: -D warnings
       - name: Check documentation links
         run: python3 tools/check_docs.py
+      - name: Lint the installer
+        run: shellcheck install.sh
 
   test:
     name: test (${{ matrix.os }})

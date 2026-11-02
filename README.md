@@ -19,8 +19,12 @@ Plan, edit, and verify code from your terminal with Ollama or any OpenAI-compati
 
 </div>
 
+```bash
+curl -fsSL https://raw.githubusercontent.com/jotx19/jotline/main/install.sh | bash
+```
+
 > [!NOTE]
-> **jotline is source-only for now.** Build it locally with the [steps below](#install); it takes about two minutes. One-command installs through **npm** and **Homebrew** are coming soon.
+> The one-line installer downloads the latest release for macOS or Linux. **npm** and **Homebrew** packages are coming soon. You can also [build from source](#build-from-source).
 
 ---
 
@@ -100,9 +104,40 @@ Every tool call is a live row you can select and expand, every file change is sh
 
 ## Install
 
-jotline is distributed as source code for now. The steps below clone the repository, build the agent and the terminal UI, and run them on a small demo project so you can watch the agent fix a real bug.
+### Quick install (macOS and Linux)
 
-> One-command installs are on the way: **npm** (the terminal UI) and **Homebrew** (the agent and the UI together). Until they ship, build from source.
+```bash
+curl -fsSL https://raw.githubusercontent.com/jotx19/jotline/main/install.sh | bash
+```
+
+The [installer](install.sh) detects your platform, downloads the latest release from GitHub, verifies its SHA-256 checksum, and installs:
+
+- `jotline`, the agent, into `~/.local/bin`;
+- `jotline-tui`, the interactive UI, with `npm install --global`, if Node.js 18.18+ is installed.
+
+It changes nothing else on your system; if a folder is not on your `PATH`, it prints the line to add. Then:
+
+```bash
+ollama pull qwen2.5-coder:7b
+cd your-project
+jotline-tui --model qwen2.5-coder:7b
+```
+
+| Variable | Effect |
+|---|---|
+| `JOTLINE_VERSION=v2.1.0` | install a specific release instead of the latest |
+| `JOTLINE_INSTALL_DIR=/usr/local/bin` | install the binary somewhere else |
+| `JOTLINE_NO_TUI=1` | skip the interactive UI |
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jotx19/jotline/main/install.sh | JOTLINE_VERSION=v2.1.0 bash
+```
+
+To uninstall: `rm ~/.local/bin/jotline && npm uninstall -g jotline-tui`. **npm** and **Homebrew** packages are coming soon.
+
+### Build from source
+
+The steps below clone the repository, build the agent and the terminal UI, and run them on a small demo project so you can watch the agent fix a real bug.
 
 ### 1. Prerequisites
 
