@@ -2,6 +2,8 @@
 
 use crate::intent::Intent;
 use crate::orchestrator::TaskPlan;
+use crate::tools::ToolOutput;
+use serde_json::Value;
 
 /// What kind of progress an [`Reporter::event`] describes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -32,6 +34,14 @@ pub trait Reporter: Send + Sync {
     fn thinking_finished(&self, _ok: bool) {}
 
     fn event(&self, _kind: EventKind, _agent: &str, _message: &str) {}
+
+    /// A tool call (or `parallel_tools` batch) is starting. `call_id` is unique within the
+    /// orchestrator and matches the following [`Reporter::tool_finished`].
+    fn tool_started(&self, _agent: &str, _call_id: u64, _tool: &str, _args: &Value) {}
+
+    /// The tool call started with the same `call_id` finished. `output.changes` lists the files
+    /// it modified, with their previous and new contents.
+    fn tool_finished(&self, _agent: &str, _call_id: u64, _tool: &str, _output: &ToolOutput) {}
 }
 
 /// A reporter that discards everything; used by tests and one-shot library callers.

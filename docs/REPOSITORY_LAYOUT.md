@@ -8,6 +8,7 @@ Choose a location by responsibility. Extend an existing crate when the code belo
 |---|---|---|
 | Orchestration engine: intent, actions, prompts, rules, tools, model clients | `crates/jotline-core/` | A library with no terminal I/O, usable by other front ends and testable without a terminal. |
 | Command-line front end | `crates/jotline/` | Argument parsing, REPL, rendering, and approvals. Depends on `jotline-core`. |
+| Front ends in other languages that talk to `jotline --stdio` | `packages/<name>/` | Each has its own package manifest, lockfile, tests, and README. The TypeScript terminal UI is `packages/tui/`. They depend only on the protocol in [PROTOCOL.md](PROTOCOL.md), never on Rust internals. |
 | Built-in rule files compiled into the engine | `crates/jotline-core/rules/` | Embedded with `include_str!`, so they ship inside the binary and are packaged with the crate. |
 | User and contributor guides | `docs/` | One guide per topic, linked from the README. |
 | Sample project rules and plugins for users to copy | `examples/` | Not built or loaded by jotline itself. |

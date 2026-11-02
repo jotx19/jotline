@@ -77,7 +77,7 @@ fn infers_missing_type_from_fields() {
     assert_eq!(canonical["type"], "tool");
     assert_eq!(
         parse_action(r#"{"foo":1}"#).unwrap_err(),
-        ParseError::MissingType
+        ParseError::MissingType(vec!["foo".to_string()])
     );
 }
 
@@ -151,4 +151,120 @@ fn context_window_keeps_pinned_request() {
     // A pinned message already inside the window is not duplicated.
     let window = context_window(&messages, 100, Some(1));
     assert_eq!(window.len(), messages.len());
+}
+
+fn shape(name: &str, required: &[&str], optional: &[&str]) -> super::action::ToolShape {
+    super::action::ToolShape {
+        name: name.to_string(),
+        required: required.iter().map(|a| a.to_string()).collect(),
+        optional: optional.iter().map(|a| a.to_string()).collect(),
+    }
+}
+
+fn names(list: &[&str]) -> Vec<super::action::ToolShape> {
+    list.iter().map(|name| shape(name, &[], &[])).collect()
+}
+
+fn builtin_shapes() -> Vec<super::action::ToolShape> {
+    crate::tools::ToolExecutor::new(crate::tools::ToolConfig::for_workspace("."))
+        .list_specs()
+        .iter()
+        .map(super::action::ToolShape::from)
+        .collect()
+}
+
+#[test]
+fn bare_arguments_matching_one_tool_become_a_tool_call() {
+    use super::action::parse_action_with_tools;
+    let tools = builtin_shapes();
+    for (reply, expected) in [
+        (r#"{"command":"pytest -q"}"#, "run_shell"),
+        (r#"{"path":"a.py","content":"x = 1"}"#, "write_file"),
+        (
+            r#"{"path":"a.py","old":"a","new":"b","reason":"fix"}"#,
+            "edit_file",
+        ),
+        (r#"{"pattern":"def add","glob":"*.py"}"#, "search_files"),
+        (r#"{"rule":"Always use pytest"}"#, "rules_add"),
+    ] {
+        let (action, canonical) =
+            parse_action_with_tools(reply, &tools).unwrap_or_else(|err| panic!("{reply}: {err}"));
+        assert!(
+            matches!(action, Action::Tool(ref t) if t.tool == expected),
+            "{reply}"
+        );
+        assert_eq!(canonical["type"], "tool");
+        assert!(canonical["args"].get("reason").is_none(), "{reply}");
+    }
+}
+
+#[test]
+fn ambiguous_or_unknown_bare_arguments_are_rejected_with_their_fields() {
+    use super::action::parse_action_with_tools;
+    let tools = builtin_shapes();
+    // read_file, python_symbol_overview, ... all accept just "path".
+    let err = parse_action_with_tools(r#"{"path":"calc.py"}"#, &tools).unwrap_err();
+    assert_eq!(err, ParseError::MissingType(vec!["path".to_string()]));
+    assert!(err.to_string().contains("(it has: path)"));
+    // "pattern" plus an unknown field fits no tool.
+    let err = parse_action_with_tools(r#"{"pattern":"x","colour":"red"}"#, &tools).unwrap_err();
+    assert!(matches!(err, ParseError::MissingType(_)));
+    let err = parse_action_with_tools(r#"{}"#, &tools).unwrap_err();
+    assert!(err.to_string().contains("no fields"));
+}
+
+#[test]
+fn tool_name_in_type_field_becomes_a_tool_call() {
+    use super::action::parse_action_with_tools;
+    let tools = names(&["run_shell", "read_file", "plugin.echo"]);
+
+    // Arguments nested under "args".
+    let (action, canonical) = parse_action_with_tools(
+        r#"{"type":"run_shell","args":{"command":"ls"},"reason":"look"}"#,
+        &tools,
+    )
+    .unwrap();
+    assert_eq!(canonical["type"], "tool");
+    match action {
+        Action::Tool(tool) => {
+            assert_eq!(tool.tool, "run_shell");
+            assert_eq!(tool.args["command"], "ls");
+            assert_eq!(tool.reason, "look");
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+
+    // Arguments at the top level, and a plugin name containing a dot.
+    let (action, _) =
+        parse_action_with_tools(r#"{"type":"read_file","path":"a.rs","end_line":5}"#, &tools)
+            .unwrap();
+    assert!(
+        matches!(action, Action::Tool(ref t) if t.tool == "read_file" && t.args["path"] == "a.rs" && t.args["end_line"] == 5)
+    );
+    let (action, _) = parse_action_with_tools(
+        r#"{"type":"plugin.echo","arguments":{"value":"x"}}"#,
+        &tools,
+    )
+    .unwrap();
+    assert!(
+        matches!(action, Action::Tool(ref t) if t.tool == "plugin.echo" && t.args["value"] == "x")
+    );
+}
+
+#[test]
+fn unknown_names_and_real_action_types_are_unchanged() {
+    use super::action::parse_action_with_tools;
+    let tools = names(&["read_file"]);
+    assert_eq!(
+        parse_action_with_tools(r#"{"type":"teleport"}"#, &tools).unwrap_err(),
+        ParseError::UnknownType("teleport".to_string())
+    );
+    let (action, _) =
+        parse_action_with_tools(r#"{"type":"final","message":"ok"}"#, &tools).unwrap();
+    assert!(matches!(action, Action::Final(_)));
+    // Without a tool list, tool names in "type" are still rejected.
+    assert!(matches!(
+        parse_action(r#"{"type":"read_file","path":"a"}"#).unwrap_err(),
+        ParseError::UnknownType(_)
+    ));
 }

@@ -124,6 +124,11 @@ pub struct Cli {
     #[arg(long, short = 'q')]
     pub quiet: bool,
 
+    /// Speak the JSON-lines protocol on stdin/stdout for a front end such as jotline-tui
+    /// (see docs/PROTOCOL.md) instead of starting the interactive terminal.
+    #[arg(long, conflicts_with = "prompt")]
+    pub stdio: bool,
+
     /// Alias for --quiet.
     #[arg(long, hide = true)]
     pub no_tool_logs: bool,

@@ -4,7 +4,7 @@ These instructions apply to every coding agent working in this repository (Claud
 
 ## Repository layout
 
-Before creating or moving a crate or directory, read and follow the [repository layout rules](docs/REPOSITORY_LAYOUT.md). Keep the root `Cargo.toml` a virtual workspace. The engine library is `crates/jotline-core/`; the terminal binary is `crates/jotline/`. The engine never prints to the terminal or reads stdin; it reports through the `Reporter` trait and asks for approval through the `Approver` trait.
+Before creating or moving a crate or directory, read and follow the [repository layout rules](docs/REPOSITORY_LAYOUT.md). Keep the root `Cargo.toml` a virtual workspace. The engine library is `crates/jotline-core/`; the terminal binary is `crates/jotline/`; the TypeScript terminal UI is `packages/tui/`. The engine never prints to the terminal or reads stdin; it reports through the `Reporter` trait and asks for approval through the `Approver` trait.
 
 ## Project scope
 
@@ -36,7 +36,10 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 python3 tools/check_docs.py
+(cd packages/tui && npm ci && npm test)
 ```
+
+Changes to `--stdio` events or requests must update [docs/PROTOCOL.md](docs/PROTOCOL.md), the types in `packages/tui/src/protocol.ts`, and the `stdio_*` tests in `crates/jotline/tests/cli.rs` together.
 
 ## Documentation
 
