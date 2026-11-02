@@ -4,7 +4,7 @@ default-members = ["crates/jotline", "crates/jotline-core"]
 resolver = "2"
 
 [workspace.package]
-version = "0.3.0"
+version = "2.0.0"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT"
