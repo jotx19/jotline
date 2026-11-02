@@ -1,5 +1,10 @@
-use super::{fail, Failure};
+use super::{fail, Failure, FileChange};
+use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+/// Files larger than this are recorded without their contents.
+const MAX_RECORDED_BYTES: usize = 256 * 1024;
 
 /// Directory names skipped by tree listing, file search, and content search.
 pub(crate) const IGNORED_DIRS: [&str; 11] = [
@@ -16,10 +21,12 @@ pub(crate) const IGNORED_DIRS: [&str; 11] = [
     ".mypy_cache",
 ];
 
-/// The workspace boundary. Every tool path goes through it.
+/// The workspace boundary. Every tool path goes through it. Clones share one change log, so
+/// changes made inside `parallel_tools` threads are collected too.
 #[derive(Clone, Debug)]
 pub struct Workspace {
     root: PathBuf,
+    changes: Arc<Mutex<Vec<FileChange>>>,
 }
 
 impl Workspace {
@@ -27,7 +34,42 @@ impl Workspace {
     pub fn new(root: &Path) -> Self {
         Self {
             root: root.canonicalize().unwrap_or_else(|_| root.to_path_buf()),
+            changes: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// The current text of `path`, or `None` when it does not exist or is not UTF-8.
+    pub(crate) fn snapshot(&self, path: &Path) -> Option<String> {
+        fs::read_to_string(path).ok()
+    }
+
+    /// Records that `path` changed from `before` (`None` when it was created) to its current
+    /// contents on disk.
+    pub(crate) fn record_change(&self, path: &Path, before: Option<String>) {
+        let after = fs::read_to_string(path).unwrap_or_default();
+        if before.as_deref() == Some(after.as_str()) {
+            return;
+        }
+        let too_large =
+            before.as_ref().map_or(0, String::len).max(after.len()) > MAX_RECORDED_BYTES;
+        let change = FileChange {
+            path: self.display(path),
+            created: before.is_none(),
+            before: if too_large { None } else { before },
+            after: if too_large { None } else { Some(after) },
+            too_large,
+        };
+        if let Ok(mut changes) = self.changes.lock() {
+            changes.push(change);
+        }
+    }
+
+    /// Removes and returns every change recorded since the last call.
+    pub(crate) fn take_changes(&self) -> Vec<FileChange> {
+        self.changes
+            .lock()
+            .map(|mut changes| std::mem::take(&mut *changes))
+            .unwrap_or_default()
     }
 
     pub fn root(&self) -> &Path {

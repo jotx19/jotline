@@ -312,3 +312,119 @@ fn llm_errors_end_the_task_with_a_message() {
     assert!(result.contains("Model call failed"));
     assert!(result.contains("connection refused"));
 }
+
+#[test]
+fn tool_name_as_action_type_runs_without_a_correction() {
+    // Replies observed from qwen2.5-coder:7b, which puts the tool name in "type".
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(
+        tmp.path().join("calc.py"),
+        "def add(a, b):\n    return a - b\n",
+    )
+    .unwrap();
+    let llm = StubLlm::new([
+        PLAN,
+        r#"{"type":"read_file","args":{"path":"calc.py","start_line":1,"end_line":250}}"#,
+        r#"{"type":"edit_file","path":"calc.py","old":"return a - b","new":"return a + b"}"#,
+        r#"{"type":"run_shell","args":{"command":"python3 -c 'import calc; assert calc.add(2, 3) == 5'"}}"#,
+        r#"{"type":"final","message":"fixed"}"#,
+    ]);
+    let mut orchestrator = build_orchestrator(&tmp, llm.clone());
+    assert_eq!(orchestrator.run_active("fix the bug in calc.py"), "fixed");
+
+    assert_eq!(llm.calls().len(), 5, "no correction round trips");
+    let history = orchestrator.agent_snapshot("main").unwrap().tool_history;
+    let tools = history.iter().map(|r| r.tool.as_str()).collect::<Vec<_>>();
+    assert_eq!(tools, ["read_file", "edit_file", "run_shell"]);
+    assert!(history.iter().all(|r| r.ok), "{history:?}");
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("calc.py")).unwrap(),
+        "def add(a, b):\n    return a + b\n"
+    );
+    assert!(orchestrator.last_run_summary().unwrap().verified);
+}
+
+#[test]
+fn repeated_invalid_replies_get_copyable_examples() {
+    let tmp = TempDir::new().unwrap();
+    let llm = StubLlm::new([
+        PLAN,
+        r#"{"path":"calc.py"}"#,
+        r#"{"path":"calc.py"}"#,
+        r#"{"type":"final","message":"ok"}"#,
+    ]);
+    let mut orchestrator = build_orchestrator(&tmp, llm.clone());
+    assert_eq!(orchestrator.run_active("hello"), "ok");
+    let calls = llm.calls();
+    let first = &calls[2].last().unwrap().content;
+    let second = &calls[3].last().unwrap().content;
+    assert!(first.contains("(it has: path)"));
+    assert!(!first.contains("Copy one of these shapes"));
+    assert!(second.contains("Copy one of these shapes"));
+}
+
+#[test]
+fn bare_tool_arguments_run_without_a_correction() {
+    let tmp = TempDir::new().unwrap();
+    let llm = StubLlm::new([
+        PLAN,
+        r#"{"path":"notes.txt","content":"hello"}"#,
+        r#"{"command":"cat notes.txt"}"#,
+        r#"{"type":"final","message":"done"}"#,
+    ]);
+    let mut orchestrator = build_orchestrator(&tmp, llm.clone());
+    assert_eq!(orchestrator.run_active("write notes"), "done");
+    assert_eq!(llm.calls().len(), 4);
+    let history = orchestrator.agent_snapshot("main").unwrap().tool_history;
+    assert_eq!(history[0].tool, "write_file");
+    assert_eq!(history[1].tool, "run_shell");
+    assert!(history[1].result.contains("hello"));
+}
+
+#[test]
+fn identical_failing_call_is_flagged_on_repeat() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(
+        tmp.path().join("calc.py"),
+        "def add(a, b):\n    return a - b\n",
+    )
+    .unwrap();
+    let bad_edit = r#"{"type":"tool","tool":"edit_file","args":{"path":"calc.py","old":"def add(a, b):\n    pass","new":"x"}}"#;
+    let llm = StubLlm::new([
+        PLAN,
+        bad_edit,
+        bad_edit,
+        r#"{"type":"final","message":"gave up"}"#,
+    ]);
+    let mut orchestrator = build_orchestrator(&tmp, llm.clone());
+    orchestrator.run_active("fix calc.py");
+    let calls = llm.calls();
+    let first = &calls[2].last().unwrap().content;
+    let second = &calls[3].last().unwrap().content;
+    assert!(
+        first.contains("return a - b"),
+        "error shows the real text: {first}"
+    );
+    assert!(!first.contains("already made this exact call"));
+    assert!(second.contains("already made this exact call"));
+}
+
+#[test]
+fn cancel_flag_stops_the_task_before_the_next_model_call() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    let tmp = TempDir::new().unwrap();
+    let flag = Arc::new(AtomicBool::new(false));
+    let llm = StubLlm::new([PLAN, r#"{"type":"final","message":"never"}"#]);
+    let mut orchestrator =
+        build_orchestrator(&tmp, llm.clone()).with_cancel_flag(Arc::clone(&flag));
+    flag.store(true, Ordering::SeqCst);
+    assert_eq!(
+        orchestrator.run_active("anything"),
+        jotline_core::orchestrator::INTERRUPTED
+    );
+    assert!(llm.calls().is_empty());
+    // The flag is consumed, so the next task runs normally.
+    assert!(!flag.load(Ordering::SeqCst));
+    assert_eq!(orchestrator.run_active("again"), "never");
+}

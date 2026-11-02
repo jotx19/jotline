@@ -450,3 +450,155 @@ fn run_shell_reports_exit_code_and_counts_as_execution() {
     assert!(failing.text.contains("EXIT_CODE: 3"));
     assert!(failing.text.contains("oops"));
 }
+
+#[test]
+fn edit_file_not_found_shows_the_current_text() {
+    let mut h = Harness::new();
+    fs::write(
+        h.workspace.join("calc.py"),
+        "import math\n\ndef add(a, b):\n    return a - b\n",
+    )
+    .unwrap();
+    // The model invented the body: the first line exists, the rest does not.
+    let out = h.run(
+        "edit_file",
+        json!({"path": "calc.py", "old": "def add(a, b):\n    pass", "new": "x"}),
+    );
+    assert_eq!(out.status, ToolStatus::Error);
+    assert!(
+        out.text.contains("Current text near line 3"),
+        "{}",
+        out.text
+    );
+    assert!(out.text.contains("    4:     return a - b"), "{}", out.text);
+
+    // Nothing matches at all in a short file: the whole file is shown.
+    let out = h.run(
+        "edit_file",
+        json!({"path": "calc.py", "old": "class Missing", "new": "x"}),
+    );
+    assert!(out.text.contains("Current file content"), "{}", out.text);
+    assert!(out.text.contains("    1: import math"));
+}
+
+#[test]
+fn edit_file_accepts_double_escaped_line_breaks() {
+    let mut h = Harness::new();
+    fs::write(
+        h.workspace.join("calc.py"),
+        "def add(a, b):\n    return a - b\n",
+    )
+    .unwrap();
+    // Literal backslash-n, as sent by some small models.
+    let out = h.run(
+        "edit_file",
+        json!({"path": "calc.py", "old": "def add(a, b):\\n    return a - b", "new": "def add(a, b):\\n    return a + b"}),
+    );
+    assert!(out.is_ok(), "{}", out.text);
+    assert!(out.text.contains("interpreted"));
+    assert_eq!(
+        fs::read_to_string(h.workspace.join("calc.py")).unwrap(),
+        "def add(a, b):\n    return a + b\n"
+    );
+
+    // A file that really contains backslash-n is edited literally.
+    fs::write(h.workspace.join("s.py"), "s = 'a\\nb'\n").unwrap();
+    let out = h.run(
+        "edit_file",
+        json!({"path": "s.py", "old": "'a\\nb'", "new": "'c'"}),
+    );
+    assert!(out.is_ok(), "{}", out.text);
+    assert!(!out.text.contains("interpreted"));
+    assert_eq!(
+        fs::read_to_string(h.workspace.join("s.py")).unwrap(),
+        "s = 'c'\n"
+    );
+}
+
+#[test]
+fn write_tools_report_file_changes() {
+    let mut h = Harness::new();
+
+    let created = h.run(
+        "write_file",
+        json!({"path": "src/a.txt", "content": "one\n"}),
+    );
+    assert_eq!(created.changes.len(), 1);
+    let change = &created.changes[0];
+    assert_eq!(change.path, "src/a.txt");
+    assert!(change.created);
+    assert_eq!(change.before, None);
+    assert_eq!(change.after.as_deref(), Some("one\n"));
+
+    let edited = h.run(
+        "edit_file",
+        json!({"path": "src/a.txt", "old": "one", "new": "two"}),
+    );
+    assert_eq!(edited.changes[0].before.as_deref(), Some("one\n"));
+    assert_eq!(edited.changes[0].after.as_deref(), Some("two\n"));
+    assert!(!edited.changes[0].created);
+
+    let read = h.run("read_file", json!({"path": "src/a.txt"}));
+    assert!(read.changes.is_empty());
+    let failed = h.run(
+        "edit_file",
+        json!({"path": "src/a.txt", "old": "absent", "new": "x"}),
+    );
+    assert!(failed.changes.is_empty());
+
+    let patch = "diff --git a/hello.txt b/hello.txt\n--- a/hello.txt\n+++ b/hello.txt\n@@ -1 +1 @@\n-one\n+patched\n";
+    let applied = h.run("apply_patch", json!({"patch": patch}));
+    assert_eq!(applied.changes.len(), 1, "{:?}", applied.changes);
+    assert_eq!(applied.changes[0].path, "hello.txt");
+    assert_eq!(applied.changes[0].after.as_deref(), Some("patched\n"));
+
+    let parallel = h.run(
+        "parallel_tools",
+        json!({"calls": [
+            {"tool": "write_file", "args": {"path": "p1.txt", "content": "1"}},
+            {"tool": "write_file", "args": {"path": "p2.txt", "content": "2"}}
+        ]}),
+    );
+    let mut paths = parallel
+        .changes
+        .iter()
+        .map(|c| c.path.as_str())
+        .collect::<Vec<_>>();
+    paths.sort();
+    assert_eq!(paths, ["p1.txt", "p2.txt"]);
+
+    // Rewriting identical content is not a change.
+    let same = h.run("write_file", json!({"path": "p1.txt", "content": "1"}));
+    assert!(same.changes.is_empty());
+}
+
+#[test]
+fn run_shell_sees_same_size_edits_made_within_the_same_second() {
+    if std::process::Command::new("python3")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let mut h = Harness::new();
+    fs::write(
+        h.workspace.join("calc.py"),
+        "def add(a, b):\n    return a - b\n",
+    )
+    .unwrap();
+    let check = json!({"command": "python3 -c 'import calc; print(calc.add(2, 3))'"});
+    let before = h.run("run_shell", check.clone());
+    assert!(before.text.contains("STDOUT:\n-1"), "{}", before.text);
+    // Same size, same second: a bytecode cache written by the first run would still look valid.
+    h.run(
+        "edit_file",
+        json!({"path": "calc.py", "old": "a - b", "new": "a + b"}),
+    );
+    let after = h.run("run_shell", check);
+    assert!(
+        after.text.contains("STDOUT:\n5"),
+        "stale bytecode was used: {}",
+        after.text
+    );
+}

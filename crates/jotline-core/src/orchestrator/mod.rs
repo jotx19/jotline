@@ -18,7 +18,7 @@ pub mod session;
 #[cfg(test)]
 mod tests;
 
-pub use action::{parse_action, Action, ParseError};
+pub use action::{parse_action, parse_action_with_tools, Action, ParseError, ToolShape};
 pub use session::{is_valid_agent_name, DelegateRecord, ToolRecord};
 
 use crate::config::{ModelRole, ModelRouting, StatePaths};
@@ -34,7 +34,11 @@ use session::{AgentRecordOut, AgentSession, SessionFileIn, SessionFileOut, SESSI
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+
+/// Returned by a task stopped through [`Orchestrator::with_cancel_flag`].
+pub const INTERRUPTED: &str = "Interrupted by the user.";
 
 /// The plan a model recorded for a task.
 #[derive(Clone, Debug, Default)]
@@ -200,6 +204,10 @@ struct RunState {
     verified: bool,
     verify_reminded: bool,
     request_index: usize,
+    /// Consecutive replies that failed to parse; from 2 on, corrections include examples.
+    invalid_streak: u32,
+    /// `tool args` signatures of calls that failed, to detect identical retries.
+    failed_calls: std::collections::HashSet<String>,
 }
 
 impl RunState {
@@ -225,6 +233,8 @@ pub struct Orchestrator {
     active_agent: String,
     delegate_counter: u64,
     last_run_summary: Option<RunSummary>,
+    call_counter: u64,
+    cancel: Option<Arc<AtomicBool>>,
 }
 
 impl Orchestrator {
@@ -247,9 +257,19 @@ impl Orchestrator {
             active_agent: "main".to_string(),
             delegate_counter: 0,
             last_run_summary: None,
+            call_counter: 0,
+            cancel: None,
         };
         this.ensure_agent("main");
         this
+    }
+
+    /// Lets another thread stop the current task: when `flag` is set, the loop stops before its
+    /// next model call, clears the flag, and returns [`INTERRUPTED`]. A model request or tool
+    /// call already in progress finishes first.
+    pub fn with_cancel_flag(mut self, flag: Arc<AtomicBool>) -> Self {
+        self.cancel = Some(flag);
+        self
     }
 
     pub fn with_reporter(mut self, reporter: Arc<dyn Reporter>) -> Self {
@@ -470,11 +490,20 @@ impl Orchestrator {
             files_changed: false,
             verified: false,
             verify_reminded: false,
+            invalid_streak: 0,
+            failed_calls: std::collections::HashSet::new(),
             request_index: self.message_count(agent) - 1,
         };
 
         let step_limit = max_steps.max(1);
         for step in 0..step_limit {
+            if self.take_cancel() {
+                return RunOutcome {
+                    message: INTERRUPTED.to_string(),
+                    wrote_files: state.files_changed,
+                    verified: state.verified,
+                };
+            }
             if depth == 0 {
                 self.update_summary(|summary| summary.steps_used = step + 1);
             }
@@ -521,14 +550,28 @@ impl Orchestrator {
                 }
             };
 
-            let (action, canonical) = match parse_action(&reply) {
-                Ok(parsed) => parsed,
+            let shapes = self
+                .tools
+                .list_specs()
+                .iter()
+                .map(ToolShape::from)
+                .collect::<Vec<_>>();
+            let (action, canonical) = match parse_action_with_tools(&reply, &shapes) {
+                Ok(parsed) => {
+                    state.invalid_streak = 0;
+                    parsed
+                }
                 Err(err) => {
+                    state.invalid_streak += 1;
                     self.push_message(agent, ChatMessage::assistant(reply));
                     let mut correction = err.to_string();
                     if !state.has_plan {
                         correction.push_str("\n\n");
                         correction.push_str(prompt::PLAN_REQUIRED);
+                    }
+                    if state.invalid_streak >= 2 {
+                        correction.push_str("\n\n");
+                        correction.push_str(prompt::VALID_EXAMPLES);
                     }
                     self.correct(agent, &correction);
                     continue;
@@ -575,12 +618,15 @@ impl Orchestrator {
                 }
                 Action::Tool(tool) => {
                     let name = tool.tool.clone();
+                    let signature = format!("{name} {}", tool.args);
                     let output = self.handle_tool(agent, tool);
                     state.record(output.wrote_files, output.executed);
-                    self.push_message(
-                        agent,
-                        ChatMessage::user(prompt::tool_result(&name, &output.text, steps_left)),
-                    );
+                    let mut feedback = prompt::tool_result(&name, &output.text, steps_left);
+                    if !output.is_ok() && !state.failed_calls.insert(signature) {
+                        feedback.push_str("\n\n");
+                        feedback.push_str(prompt::REPEATED_FAILURE);
+                    }
+                    self.push_message(agent, ChatMessage::user(feedback));
                 }
                 Action::ParallelTools(parallel) => {
                     let output = self.handle_parallel(agent, parallel);
@@ -663,7 +709,10 @@ impl Orchestrator {
             agent,
             &format!("{name} {}", preview(&args.to_string(), 160)),
         );
+        let call_id = self.next_call_id();
+        self.reporter.tool_started(agent, call_id, &name, &args);
         let output = self.tools.execute(&name, &args);
+        self.reporter.tool_finished(agent, call_id, &name, &output);
         self.report_output(agent, &output);
         self.push_tool_record(
             agent,
@@ -703,7 +752,12 @@ impl Orchestrator {
             .join(", ");
         self.reporter
             .event(EventKind::ToolCall, agent, &format!("parallel [{names}]"));
+        let call_id = self.next_call_id();
+        self.reporter
+            .tool_started(agent, call_id, "parallel_tools", &args);
         let output = self.tools.execute("parallel_tools", &args);
+        self.reporter
+            .tool_finished(agent, call_id, "parallel_tools", &output);
         self.report_output(agent, &output);
         self.push_tool_record(
             agent,
@@ -845,6 +899,18 @@ impl Orchestrator {
                 }
             }
         }
+    }
+
+    fn next_call_id(&mut self) -> u64 {
+        self.call_counter += 1;
+        self.call_counter
+    }
+
+    /// True (once) when a cancellation was requested.
+    fn take_cancel(&self) -> bool {
+        self.cancel
+            .as_ref()
+            .is_some_and(|flag| flag.swap(false, Ordering::SeqCst))
     }
 
     fn next_delegate_name(&mut self, depth: u32) -> String {

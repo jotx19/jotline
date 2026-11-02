@@ -225,9 +225,22 @@ pub(crate) fn apply_patch(ws: &Workspace, patch: &str, timeout: u64) -> ToolResu
         cmd.arg(format!("--directory={}", prefix.trim_end_matches('/')));
     }
     cmd.arg("-");
+    let targets = patch_paths(patch)
+        .into_iter()
+        .filter_map(|path| ws.resolve(&path).ok())
+        .map(|resolved| {
+            let before = ws.snapshot(&resolved);
+            (resolved, before)
+        })
+        .collect::<Vec<_>>();
     let result = run(&mut cmd, Some(patch), timeout)?;
     if result.exit_code != 0 {
         return fail(format!("git apply failed\n{}", format_output(&result)));
+    }
+    for (resolved, before) in targets {
+        if resolved.exists() || before.is_some() {
+            ws.record_change(&resolved, before);
+        }
     }
 
     let mut status_cmd = git(ws);
@@ -246,6 +259,13 @@ pub(crate) fn apply_patch(ws: &Workspace, patch: &str, timeout: u64) -> ToolResu
 
 /// The first path in `patch` that would leave the workspace, if any.
 pub(crate) fn find_unsafe_patch_path(ws: &Workspace, patch: &str) -> Option<String> {
+    patch_paths(patch)
+        .into_iter()
+        .find(|path| is_unsafe_patch_path(ws, path))
+}
+
+/// Every distinct path named in a patch's headers, without `a/` and `b/` prefixes.
+fn patch_paths(patch: &str) -> Vec<String> {
     let mut candidates = Vec::new();
     for line in patch.lines() {
         if let Some(rest) = line.strip_prefix("diff --git ") {
@@ -265,10 +285,16 @@ pub(crate) fn find_unsafe_patch_path(ws: &Workspace, patch: &str) -> Option<Stri
         }
     }
 
-    candidates
+    let mut paths = Vec::new();
+    for path in candidates
         .into_iter()
         .filter_map(|raw| normalize_patch_path(&raw))
-        .find(|path| is_unsafe_patch_path(ws, path))
+    {
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+    paths
 }
 
 fn normalize_patch_path(raw: &str) -> Option<String> {

@@ -154,3 +154,193 @@ fn invalid_workspace_fails_cleanly() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stdout).contains("workspace not found"));
 }
+
+/// Reads protocol events until `run_finished` (or EOF), returning them all.
+fn read_events_until_finished(reader: &mut impl BufRead) -> Vec<serde_json::Value> {
+    let mut events = Vec::new();
+    let mut line = String::new();
+    while reader.read_line(&mut line).unwrap_or(0) > 0 {
+        let event: serde_json::Value = serde_json::from_str(line.trim())
+            .unwrap_or_else(|err| panic!("stdout line is not JSON ({err}): {line}"));
+        line.clear();
+        let done = event["event"] == "run_finished";
+        events.push(event);
+        if done {
+            break;
+        }
+    }
+    events
+}
+
+#[test]
+fn stdio_protocol_streams_structured_events_with_diffs() {
+    use std::process::Stdio;
+
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(
+        tmp.path().join("calc.py"),
+        "def add(a, b):\n    return a - b\n",
+    )
+    .unwrap();
+    let (endpoint, _) = fake_ollama(vec![
+        (200, r#"{"type":"plan","summary":"fix add","steps":["edit","check"]}"#.into()),
+        (200, r#"{"type":"tool","tool":"edit_file","args":{"path":"calc.py","old":"a - b","new":"a + b"}}"#.into()),
+        (200, r#"{"type":"tool","tool":"run_shell","args":{"command":"grep -c 'a + b' calc.py"}}"#.into()),
+        (200, r#"{"type":"final","message":"Fixed add.","verified":["grep -> 1"]}"#.into()),
+    ]);
+
+    let mut child = Command::new(BIN)
+        .args(["--stdio", "--endpoint", &endpoint, "--model", "test-model"])
+        .arg("--workspace")
+        .arg(tmp.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    let mut ready = String::new();
+    stdout.read_line(&mut ready).unwrap();
+    let ready: serde_json::Value = serde_json::from_str(&ready).unwrap();
+    assert_eq!(ready["event"], "ready");
+    assert_eq!(ready["protocol"], 1);
+    assert_eq!(ready["model"], "test-model");
+    assert!(ready["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|t| t == "edit_file"));
+
+    writeln!(
+        stdin,
+        r#"{{"type":"prompt","text":"fix the bug in calc.py"}}"#
+    )
+    .unwrap();
+    let events = read_events_until_finished(&mut stdout);
+    let kinds = events
+        .iter()
+        .map(|e| e["event"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    for expected in [
+        "run_started",
+        "intent",
+        "thinking",
+        "plan",
+        "tool_started",
+        "tool_finished",
+        "run_finished",
+    ] {
+        assert!(kinds.contains(&expected), "missing {expected} in {kinds:?}");
+    }
+
+    let edit = events
+        .iter()
+        .find(|e| e["event"] == "tool_finished" && e["tool"] == "edit_file")
+        .expect("edit_file finished");
+    assert_eq!(edit["status"], "ok");
+    assert_eq!(edit["changes"][0]["path"], "calc.py");
+    assert_eq!(
+        edit["changes"][0]["before"],
+        "def add(a, b):\n    return a - b\n"
+    );
+    assert_eq!(
+        edit["changes"][0]["after"],
+        "def add(a, b):\n    return a + b\n"
+    );
+    let started = events
+        .iter()
+        .find(|e| e["event"] == "tool_started" && e["tool"] == "edit_file")
+        .unwrap();
+    assert_eq!(started["id"], edit["id"]);
+
+    let finished = events.last().unwrap();
+    assert_eq!(finished["message"], "Fixed add.");
+    assert_eq!(finished["intent"], "bugfix");
+    assert_eq!(finished["files_changed"], true);
+    assert_eq!(finished["verified"], true);
+    assert_eq!(finished["handoff"]["verified"][0], "grep -> 1");
+
+    writeln!(
+        stdin,
+        r#"{{"type":"command","name":"rules_add","arg":"Prefer early returns"}}"#
+    )
+    .unwrap();
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let rules: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(rules["event"], "rules");
+    assert!(rules["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|r| r["name"] == ".jotline/rules/user.md"));
+
+    writeln!(stdin, "not json").unwrap();
+    line.clear();
+    stdout.read_line(&mut line).unwrap();
+    assert!(line.contains("invalid request JSON"), "{line}");
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}
+
+#[test]
+fn stdio_approvals_round_trip() {
+    use std::process::Stdio;
+
+    let tmp = TempDir::new().unwrap();
+    let (endpoint, _) = fake_ollama(vec![
+        (
+            200,
+            r#"{"type":"plan","summary":"run","steps":["run"]}"#.into(),
+        ),
+        (
+            200,
+            r#"{"type":"tool","tool":"run_shell","args":{"command":"touch approved.txt"}}"#.into(),
+        ),
+        (
+            200,
+            r#"{"type":"tool","tool":"run_shell","args":{"command":"touch denied.txt"}}"#.into(),
+        ),
+        (200, r#"{"type":"final","message":"done"}"#.into()),
+    ]);
+    let mut child = Command::new(BIN)
+        .args(["--stdio", "--ask-permissions", "--endpoint", &endpoint])
+        .arg("--workspace")
+        .arg(tmp.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    writeln!(stdin, r#"{{"type":"prompt","text":"run the commands"}}"#).unwrap();
+
+    let mut answers = [true, false].into_iter();
+    let mut line = String::new();
+    let mut finished = None;
+    while stdout.read_line(&mut line).unwrap() > 0 {
+        let event: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+        line.clear();
+        if event["event"] == "approval_request" {
+            assert!(event["request"].as_str().unwrap().contains("touch"));
+            let approved = answers.next().expect("only two approvals expected");
+            writeln!(
+                stdin,
+                r#"{{"type":"approval","id":{},"approved":{approved}}}"#,
+                event["id"]
+            )
+            .unwrap();
+        }
+        if event["event"] == "run_finished" {
+            finished = Some(event);
+            break;
+        }
+    }
+    assert_eq!(finished.unwrap()["message"], "done");
+    assert!(tmp.path().join("approved.txt").exists());
+    assert!(!tmp.path().join("denied.txt").exists());
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}
