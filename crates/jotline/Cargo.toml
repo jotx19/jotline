@@ -1,0 +1,29 @@
+[package]
+name = "jotline"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "A small, local-first coding agent for open models (Ollama and OpenAI-compatible servers)"
+readme = "../../README.md"
+keywords = ["llm", "agent", "coding-assistant", "ollama", "cli"]
+categories = ["development-tools", "command-line-utilities"]
+
+[[bin]]
+name = "jotline"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+jotline-core = { path = "../jotline-core", version = "0.3.0" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

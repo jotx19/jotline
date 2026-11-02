@@ -1,0 +1,20 @@
+name: PR title
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+permissions:
+  contents: read
+jobs:
+  conventional-title:
+    name: Conventional PR title
+    runs-on: ubuntu-latest
+    steps:
+      # Read event data only: never check out or execute the PR's code here.
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const title = context.payload.pull_request.title;
+            const pattern = /^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-zA-Z0-9][a-zA-Z0-9._\/-]*\))?!?: \S[^\r\n]*$/;
+            if (!pattern.test(title) || title.trim() !== title) {
+              core.setFailed('Use type(optional-scope)!: description; e.g. feat(tools): add search_files. Types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert.');
+            }

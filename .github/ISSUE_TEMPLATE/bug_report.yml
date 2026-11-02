@@ -1,0 +1,49 @@
+name: Bug report
+description: Something in jotline behaves incorrectly.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: The command or request you ran, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: A minimal workspace and request that shows the problem. Remove private code and paths.
+      placeholder: |
+        1. mkdir demo && cd demo && echo 'print(1)' > a.py
+        2. jotline -p "add a main function to a.py"
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: jotline version
+      description: Output of `jotline --version`, or the commit you built.
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Provider and model
+      placeholder: ollama qwen3:8b
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: macOS 15 arm64 / Ubuntu 24.04 x86_64
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Relevant output
+      description: Terminal output or the session file excerpt. Remove secrets and personal paths.
+      render: text

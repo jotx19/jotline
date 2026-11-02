@@ -1,0 +1,104 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          components: rustfmt,clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo doc --workspace --no-deps --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - name: Check documentation links
+        run: python3 tools/check_docs.py
+
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Configure git identity for repository tests
+        run: |
+          git config --global user.email "ci@example.com"
+          git config --global user.name "CI"
+          git config --global init.defaultBranch main
+      - run: cargo test --workspace --locked
+      - name: Smoke test the release binary
+        run: |
+          cargo build --release --locked -p jotline
+          ./target/release/jotline --version
+          ./target/release/jotline --help > /dev/null
+
+  msrv:
+    name: msrv
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the minimum supported Rust version
+        id: msrv
+        run: |
+          msrv=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)
+          test -n "$msrv"
+          rustup toolchain install "$msrv" --profile minimal
+          echo "version=$msrv" >> "$GITHUB_OUTPUT"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: msrv-${{ steps.msrv.outputs.version }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo +${{ steps.msrv.outputs.version }} check --workspace --all-targets --locked
+
+  # The single required status check. Branch protection should require this job only, so
+  # adding or renaming jobs never requires changing repository settings.
+  required:
+    name: CI required
+    if: always()
+    needs: [lint, test, msrv]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check that every job succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          failed=$(echo "$NEEDS" | jq '[.[] | select(.result != "success")] | length')
+          if [ "$failed" -ne 0 ]; then
+            echo "::error::$failed required job(s) did not succeed"
+            exit 1
+          fi

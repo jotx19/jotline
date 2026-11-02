@@ -1,0 +1,112 @@
+name: Release
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [closed]
+permissions:
+  contents: read
+jobs:
+  # Manual: open or update the release PR. Nothing is published.
+  prepare:
+    concurrency:
+      group: release-default-branch
+      cancel-in-progress: false
+    if: github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create repository-scoped release token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: app
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: write
+      - name: Prepare the release PR without publishing
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ steps.app.outputs.token }}
+          target-branch: ${{ github.event.repository.default_branch }}
+          skip-github-release: true
+
+  # Merging the release PR: tag the merge commit and create the GitHub release.
+  publish:
+    concurrency:
+      group: release-default-branch
+      cancel-in-progress: false
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == github.event.repository.default_branch &&
+      contains(github.event.pull_request.labels.*.name, 'autorelease: pending')
+    runs-on: ubuntu-latest
+    outputs:
+      created: ${{ steps.release.outputs.release_created }}
+      tag: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - name: Create repository-scoped release token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: app
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: write
+      - name: Tag and create the GitHub release
+        id: release
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ steps.app.outputs.token }}
+          target-branch: ${{ github.event.repository.default_branch }}
+          skip-github-pull-request: true
+
+  binaries:
+    name: binaries (${{ matrix.target }})
+    needs: publish
+    if: needs.publish.outputs.created == 'true'
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.publish.outputs.tag }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --locked -p jotline --target ${{ matrix.target }}
+      - name: Package
+        id: package
+        env:
+          TAG: ${{ needs.publish.outputs.tag }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          name="jotline-${TAG}-${TARGET}"
+          mkdir "$name"
+          cp "target/${TARGET}/release/jotline" README.md LICENSE "$name/"
+          tar -czf "${name}.tar.gz" "$name"
+          shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256"
+          echo "archive=${name}.tar.gz" >> "$GITHUB_OUTPUT"
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.publish.outputs.tag }}
+          ARCHIVE: ${{ steps.package.outputs.archive }}
+        run: gh release upload "$TAG" "$ARCHIVE" "$ARCHIVE.sha256" --clobber --repo "$GITHUB_REPOSITORY"

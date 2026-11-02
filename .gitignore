@@ -1,0 +1,18 @@
+/target/
+.jotline/
+.DS_Store
+.idea/
+.vscode/
+*.swp
+.env
+.env.*
+!.env.example
+
+# Local credentials and package archives.
+*.pem
+*.key
+*.p12
+id_rsa
+id_ed25519
+*.crate
+*.tar.gz

@@ -1,0 +1,31 @@
+[package]
+name = "jotline-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Orchestration engine for jotline: intent routing, typed actions, rules, and workspace-scoped tools"
+readme = "../../README.md"
+keywords = ["llm", "agent", "coding-assistant", "ollama", "cli"]
+categories = ["development-tools", "command-line-utilities"]
+include = ["/src/**", "!/src/**/tests.rs", "/rules/**", "/Cargo.toml"]
+
+[lib]
+name = "jotline_core"
+
+[dependencies]
+anyhow.workspace = true
+regex.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+wait-timeout.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

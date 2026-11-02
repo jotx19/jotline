@@ -1,0 +1,23 @@
+name: Feature request
+description: Propose new behavior for jotline.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: The task you are trying to do and why current behavior falls short.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: What jotline should do. Include example requests, commands, or tool calls.
+    validations:
+      required: true
+  - type: textarea
+    id: small-models
+    attributes:
+      label: Effect on small local models
+      description: Does this add prompt tokens, tools, or steps? How would it behave on a 7-8B model?
