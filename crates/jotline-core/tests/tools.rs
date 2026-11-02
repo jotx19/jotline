@@ -450,3 +450,67 @@ fn run_shell_reports_exit_code_and_counts_as_execution() {
     assert!(failing.text.contains("EXIT_CODE: 3"));
     assert!(failing.text.contains("oops"));
 }
+
+#[test]
+fn edit_file_not_found_shows_the_current_text() {
+    let mut h = Harness::new();
+    fs::write(
+        h.workspace.join("calc.py"),
+        "import math\n\ndef add(a, b):\n    return a - b\n",
+    )
+    .unwrap();
+    // The model invented the body: the first line exists, the rest does not.
+    let out = h.run(
+        "edit_file",
+        json!({"path": "calc.py", "old": "def add(a, b):\n    pass", "new": "x"}),
+    );
+    assert_eq!(out.status, ToolStatus::Error);
+    assert!(
+        out.text.contains("Current text near line 3"),
+        "{}",
+        out.text
+    );
+    assert!(out.text.contains("    4:     return a - b"), "{}", out.text);
+
+    // Nothing matches at all in a short file: the whole file is shown.
+    let out = h.run(
+        "edit_file",
+        json!({"path": "calc.py", "old": "class Missing", "new": "x"}),
+    );
+    assert!(out.text.contains("Current file content"), "{}", out.text);
+    assert!(out.text.contains("    1: import math"));
+}
+
+#[test]
+fn edit_file_accepts_double_escaped_line_breaks() {
+    let mut h = Harness::new();
+    fs::write(
+        h.workspace.join("calc.py"),
+        "def add(a, b):\n    return a - b\n",
+    )
+    .unwrap();
+    // Literal backslash-n, as sent by some small models.
+    let out = h.run(
+        "edit_file",
+        json!({"path": "calc.py", "old": "def add(a, b):\\n    return a - b", "new": "def add(a, b):\\n    return a + b"}),
+    );
+    assert!(out.is_ok(), "{}", out.text);
+    assert!(out.text.contains("interpreted"));
+    assert_eq!(
+        fs::read_to_string(h.workspace.join("calc.py")).unwrap(),
+        "def add(a, b):\n    return a + b\n"
+    );
+
+    // A file that really contains backslash-n is edited literally.
+    fs::write(h.workspace.join("s.py"), "s = 'a\\nb'\n").unwrap();
+    let out = h.run(
+        "edit_file",
+        json!({"path": "s.py", "old": "'a\\nb'", "new": "'c'"}),
+    );
+    assert!(out.is_ok(), "{}", out.text);
+    assert!(!out.text.contains("interpreted"));
+    assert_eq!(
+        fs::read_to_string(h.workspace.join("s.py")).unwrap(),
+        "s = 'c'\n"
+    );
+}

@@ -18,7 +18,7 @@ Arguments marked `*` are required. Numbers and booleans may be sent as JSON valu
 
 | Tool | Arguments | Result |
 |---|---|---|
-| `edit_file` | `path*`, `old*`, `new*`, `replace_all` | `EDITED: <path> (replacements=n)`. Fails when `old` is not found or matches more than once without `replace_all`, telling the model to add context. This is the preferred edit tool. |
+| `edit_file` | `path*`, `old*`, `new*`, `replace_all` | `EDITED: <path> (replacements=n)`. Fails when `old` matches more than once without `replace_all`, telling the model to add context. When `old` is not found, the error includes the current lines around the best match for its first line (or the whole file, up to 60 lines) so the model can copy the exact text. An `old` that only matches after turning literal `\n` into line breaks is accepted and reported. This is the preferred edit tool. |
 | `write_file` | `path*`, `content*` | `WROTE: <path> (n bytes, created\|overwritten)`. Creates parent directories. |
 | `structured_patch` | `operations*`: `replace_text {path, old, new, count?}`, `replace_lines {path, start_line, end_line, new_text}`, `append_text {path, text}` | One `op#i` line per operation. Fails only if every operation fails. |
 | `apply_patch` | `patch*` unified diff | `PATCH APPLIED` and short git status. Requires a git repository; rejects any header path that would leave the workspace. Paths are relative to the workspace, even when it is nested in a larger repository. |

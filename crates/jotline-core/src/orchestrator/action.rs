@@ -120,8 +120,9 @@ pub struct FinalAction {
 pub enum ParseError {
     /// No JSON object could be found in the reply.
     NoJson,
-    /// A JSON object was found but its `type` is missing and could not be inferred.
-    MissingType,
+    /// A JSON object was found but its `type` is missing and could not be inferred. Holds the
+    /// object's field names, so the correction can tell the model what it sent.
+    MissingType(Vec<String>),
     UnknownType(String),
     /// The type is known but a field has the wrong shape or a required field is missing.
     Invalid {
@@ -136,9 +137,10 @@ impl fmt::Display for ParseError {
             ParseError::NoJson => f.write_str(
                 "Your reply contained no JSON object. Reply with exactly one JSON object and nothing else.",
             ),
-            ParseError::MissingType => write!(
+            ParseError::MissingType(keys) => write!(
                 f,
-                "Your JSON object has no \"type\" field. Set \"type\" to one of: {}.",
+                "Your JSON object has no \"type\" field (it has: {}). Set \"type\" to one of: {}. A tool call looks like {{\"type\":\"tool\",\"tool\":\"read_file\",\"args\":{{\"path\":\"calc.py\"}}}}.",
+                if keys.is_empty() { "no fields".to_string() } else { keys.join(", ") },
                 ACTION_TYPES.join(", ")
             ),
             ParseError::UnknownType(kind) => write!(
@@ -160,12 +162,70 @@ impl fmt::Display for ParseError {
 /// Parses one model reply into an action, returning the canonical JSON object as well so it
 /// can be stored in the conversation instead of the raw reply.
 pub fn parse_action(text: &str) -> Result<(Action, Value), ParseError> {
+    parse_action_with_tools(text, &[])
+}
+
+/// The argument names of one tool, used to recognize tool calls that small models send in a
+/// non-standard shape.
+#[derive(Clone, Debug)]
+pub struct ToolShape {
+    pub name: String,
+    pub required: Vec<String>,
+    pub optional: Vec<String>,
+}
+
+impl From<&crate::tools::ToolSpec> for ToolShape {
+    fn from(spec: &crate::tools::ToolSpec) -> Self {
+        let (required, optional): (Vec<_>, Vec<_>) = spec.args.iter().partition(|arg| arg.required);
+        Self {
+            name: spec.name.clone(),
+            required: required.into_iter().map(|arg| arg.name.clone()).collect(),
+            optional: optional.into_iter().map(|arg| arg.name.clone()).collect(),
+        }
+    }
+}
+
+/// Like [`parse_action`], but also recognizes two tool-call shapes that small models often
+/// produce instead of a `tool` action:
+///
+/// - a tool name in the `type` field: `{"type":"read_file","path":"a.rs"}` or
+///   `{"type":"read_file","args":{"path":"a.rs"}}`;
+/// - bare arguments with no `type` whose field names fit exactly one tool (all of its required
+///   arguments present, no unknown fields): `{"command":"ls"}` is `run_shell`. When several tools
+///   fit, the reply is still rejected with [`ParseError::MissingType`].
+///
+/// Arguments come from `args` (or `arguments`) when present, otherwise from the remaining
+/// top-level fields.
+pub fn parse_action_with_tools(
+    text: &str,
+    tools: &[ToolShape],
+) -> Result<(Action, Value), ParseError> {
     let mut object = extract_json_object(text).ok_or(ParseError::NoJson)?;
     let map = object.as_object_mut().ok_or(ParseError::NoJson)?;
 
+    let raw_type = map
+        .get("type")
+        .and_then(Value::as_str)
+        .map(|kind| kind.trim().to_string());
+    if let Some(tool) = raw_type
+        .as_deref()
+        .filter(|name| tools.iter().any(|tool| tool.name == *name))
+    {
+        rewrite_as_tool_call(map, tool);
+    }
+
+    if map.get("type").is_none() && infer_type(map).is_none() {
+        if let Some(tool) = tool_matching_fields(map, tools) {
+            rewrite_as_tool_call(map, &tool);
+        }
+    }
+
     let kind = match map.get("type").and_then(Value::as_str) {
         Some(kind) => normalize_type(kind),
-        None => infer_type(map).ok_or(ParseError::MissingType)?.to_string(),
+        None => match infer_type(map) {
+            Some(kind) => kind.to_string(),
+            None => return Err(ParseError::MissingType(map.keys().cloned().collect())),
+        },
     };
     if !ACTION_TYPES.contains(&kind.as_str()) {
         return Err(ParseError::UnknownType(kind));
@@ -182,6 +242,56 @@ pub fn parse_action(text: &str) -> Result<(Action, Value), ParseError> {
         message,
     })?;
     Ok((action, object))
+}
+
+/// The only tool whose arguments fit the object's fields, if exactly one does.
+fn tool_matching_fields(
+    map: &serde_json::Map<String, Value>,
+    tools: &[ToolShape],
+) -> Option<String> {
+    let fields = map
+        .keys()
+        .filter(|key| key.as_str() != "reason")
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    if fields.is_empty() {
+        return None;
+    }
+    let mut matches = tools.iter().filter(|tool| {
+        !tool.required.is_empty()
+            && tool
+                .required
+                .iter()
+                .all(|arg| fields.contains(&arg.as_str()))
+            && fields.iter().all(|field| {
+                tool.required
+                    .iter()
+                    .chain(&tool.optional)
+                    .any(|arg| arg == field)
+            })
+    });
+    let first = matches.next()?;
+    match matches.next() {
+        None => Some(first.name.clone()),
+        Some(_) => None,
+    }
+}
+
+/// Turns `{"type":"<tool>", ...}` into `{"type":"tool","tool":"<tool>","args":{...}}`.
+fn rewrite_as_tool_call(map: &mut serde_json::Map<String, Value>, tool: &str) {
+    map.remove("type");
+    let reason = map.remove("reason");
+    let args = match map.remove("args").or_else(|| map.remove("arguments")) {
+        Some(args) => args,
+        None => Value::Object(std::mem::take(map)),
+    };
+    map.clear();
+    map.insert("type".to_string(), Value::String("tool".to_string()));
+    map.insert("tool".to_string(), Value::String(tool.to_string()));
+    map.insert("args".to_string(), args);
+    if let Some(reason) = reason {
+        map.insert("reason".to_string(), reason);
+    }
 }
 
 fn normalize_type(kind: &str) -> String {

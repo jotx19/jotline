@@ -18,7 +18,7 @@ pub mod session;
 #[cfg(test)]
 mod tests;
 
-pub use action::{parse_action, Action, ParseError};
+pub use action::{parse_action, parse_action_with_tools, Action, ParseError, ToolShape};
 pub use session::{is_valid_agent_name, DelegateRecord, ToolRecord};
 
 use crate::config::{ModelRole, ModelRouting, StatePaths};
@@ -200,6 +200,10 @@ struct RunState {
     verified: bool,
     verify_reminded: bool,
     request_index: usize,
+    /// Consecutive replies that failed to parse; from 2 on, corrections include examples.
+    invalid_streak: u32,
+    /// `tool args` signatures of calls that failed, to detect identical retries.
+    failed_calls: std::collections::HashSet<String>,
 }
 
 impl RunState {
@@ -470,6 +474,8 @@ impl Orchestrator {
             files_changed: false,
             verified: false,
             verify_reminded: false,
+            invalid_streak: 0,
+            failed_calls: std::collections::HashSet::new(),
             request_index: self.message_count(agent) - 1,
         };
 
@@ -521,14 +527,28 @@ impl Orchestrator {
                 }
             };
 
-            let (action, canonical) = match parse_action(&reply) {
-                Ok(parsed) => parsed,
+            let shapes = self
+                .tools
+                .list_specs()
+                .iter()
+                .map(ToolShape::from)
+                .collect::<Vec<_>>();
+            let (action, canonical) = match parse_action_with_tools(&reply, &shapes) {
+                Ok(parsed) => {
+                    state.invalid_streak = 0;
+                    parsed
+                }
                 Err(err) => {
+                    state.invalid_streak += 1;
                     self.push_message(agent, ChatMessage::assistant(reply));
                     let mut correction = err.to_string();
                     if !state.has_plan {
                         correction.push_str("\n\n");
                         correction.push_str(prompt::PLAN_REQUIRED);
+                    }
+                    if state.invalid_streak >= 2 {
+                        correction.push_str("\n\n");
+                        correction.push_str(prompt::VALID_EXAMPLES);
                     }
                     self.correct(agent, &correction);
                     continue;
@@ -575,12 +595,15 @@ impl Orchestrator {
                 }
                 Action::Tool(tool) => {
                     let name = tool.tool.clone();
+                    let signature = format!("{name} {}", tool.args);
                     let output = self.handle_tool(agent, tool);
                     state.record(output.wrote_files, output.executed);
-                    self.push_message(
-                        agent,
-                        ChatMessage::user(prompt::tool_result(&name, &output.text, steps_left)),
-                    );
+                    let mut feedback = prompt::tool_result(&name, &output.text, steps_left);
+                    if !output.is_ok() && !state.failed_calls.insert(signature) {
+                        feedback.push_str("\n\n");
+                        feedback.push_str(prompt::REPEATED_FAILURE);
+                    }
+                    self.push_message(agent, ChatMessage::user(feedback));
                 }
                 Action::ParallelTools(parallel) => {
                     let output = self.handle_parallel(agent, parallel);

@@ -119,6 +119,14 @@ fn continue_hint(steps_left: u32) -> String {
 pub(crate) const PLAN_REQUIRED: &str =
     "Start with a plan: reply with {\"type\":\"plan\", \"intent\":..., \"summary\":..., \"steps\":[...]} before using tools, delegating, or finishing.";
 
+pub(crate) const VALID_EXAMPLES: &str = r#"Copy one of these shapes exactly, replacing the values:
+{"type":"tool","tool":"read_file","args":{"path":"calc.py"}}
+{"type":"tool","tool":"edit_file","args":{"path":"calc.py","old":"exact old text","new":"new text"}}
+{"type":"tool","tool":"run_shell","args":{"command":"python3 -m pytest -q"}}
+{"type":"final","message":"what you did","verified":["command -> result"]}"#;
+
+pub(crate) const REPEATED_FAILURE: &str = "You already made this exact call and it failed. Do not repeat it. Use the error message above (it may show the current file text) or read_file, then change the arguments.";
+
 pub(crate) const FINAL_EMPTY: &str =
     "A final action needs a non-empty \"message\" or \"summary\" for the user.";
 

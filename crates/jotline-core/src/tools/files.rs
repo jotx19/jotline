@@ -329,11 +329,30 @@ pub(crate) fn edit_file(
     }
     let resolved = ws.existing_file(path)?;
     let text = read_text(&resolved, path)?;
-    let occurrences = text.matches(old).count();
+
+    // Small models often double-escape line breaks ("a\\nb" instead of "a\nb"). Accept that
+    // only when the literal text is absent and the unescaped text is present.
+    let (old, new, note) = if !text.contains(old) && old.contains("\\n") {
+        let unescaped = unescape_breaks(old);
+        if text.contains(&unescaped) {
+            (
+                unescaped,
+                unescape_breaks(new),
+                " (interpreted \\n in old/new as line breaks)",
+            )
+        } else {
+            (old.to_string(), new.to_string(), "")
+        }
+    } else {
+        (old.to_string(), new.to_string(), "")
+    };
+
+    let occurrences = text.matches(old.as_str()).count();
     match occurrences {
         0 => {
             return fail(format!(
-                "'old' text not found in {path}. Re-read the file and copy the exact text, including indentation and line breaks."
+                "'old' text not found in {path}. Copy 'old' exactly from the current file, including indentation.\n{}",
+                current_text_hint(&text, &old)
             ))
         }
         1 => {}
@@ -344,9 +363,61 @@ pub(crate) fn edit_file(
         }
         _ => {}
     }
-    let updated = text.replace(old, new);
+    let updated = text.replace(old.as_str(), &new);
     write_text(&resolved, path, &updated)?;
-    Ok(format!("EDITED: {path} (replacements={occurrences})"))
+    Ok(format!("EDITED: {path} (replacements={occurrences}){note}"))
+}
+
+fn unescape_breaks(value: &str) -> String {
+    value
+        .replace("\\r\\n", "\n")
+        .replace("\\n", "\n")
+        .replace("\\t", "\t")
+}
+
+/// Shows the model the real text it should have copied: the lines around the best match for
+/// the first line of `old`, the whole file when it is short, or a pointer to `read_file`.
+pub(crate) fn current_text_hint(text: &str, old: &str) -> String {
+    const SHORT_FILE_LINES: usize = 60;
+    const CONTEXT: usize = 3;
+    let lines = text.lines().collect::<Vec<_>>();
+    let numbered = |start: usize, end: usize| {
+        lines[start..end]
+            .iter()
+            .enumerate()
+            .map(|(offset, line)| format!("{:5}: {line}", start + offset + 1))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let anchor = unescape_breaks(old)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(str::to_string);
+    if let Some(anchor) = anchor {
+        if let Some(index) = lines
+            .iter()
+            .position(|line| line.trim() == anchor)
+            .or_else(|| lines.iter().position(|line| line.contains(anchor.as_str())))
+        {
+            let old_lines = old.lines().count().max(1);
+            let start = index.saturating_sub(CONTEXT);
+            let end = (index + old_lines + CONTEXT).min(lines.len());
+            return format!(
+                "Current text near line {} (line numbers are not part of the file):\n{}",
+                index + 1,
+                numbered(start, end)
+            );
+        }
+    }
+    if lines.len() <= SHORT_FILE_LINES {
+        return format!(
+            "Current file content (line numbers are not part of the file):\n{}",
+            numbered(0, lines.len())
+        );
+    }
+    "Use read_file to see the current text before editing.".to_string()
 }
 
 fn replace_text(
