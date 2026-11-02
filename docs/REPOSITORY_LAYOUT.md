@@ -32,4 +32,4 @@ Build output and temporary files go under ignored `target/`. jotline's own runti
 
 ## Adding or moving a crate or directory
 
-Update Cargo membership and path dependencies together with the files. Then reconcile CI workflow paths, `release-please-config.json` extra files, Dependabot directories, documentation links, and this guide. Run the full check list in [AGENTS.md](../AGENTS.md#testing).
+Update Cargo membership and path dependencies together with the files. Then reconcile CI workflow paths, `release-please-config.json` extra files, documentation links, and this guide. Run the full check list in [AGENTS.md](../AGENTS.md#testing).
